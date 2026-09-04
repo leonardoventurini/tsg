@@ -4,6 +4,8 @@ use tsg::{
 };
 
 const DIMENSIONS: usize = 8;
+const LOCK_TEST_DATABASE: &str = "TSG_LOCK_TEST_DATABASE";
+const LOCK_TEST_READY: &str = "TSG_LOCK_TEST_READY";
 
 fn vector(axis: usize) -> Vec<f32> {
     let mut vector = vec![0.0; DIMENSIONS];
@@ -129,4 +131,41 @@ fn readonly_adaptive_search_falls_back_when_sidecar_is_missing() {
     assert_eq!(adaptive.backend, SearchBackend::Exact);
     assert_eq!(adaptive.hits[0].node.id, "node-0");
     assert!(matches!(accelerated, Err(Error::AcceleratorUnavailable(_))));
+}
+
+#[test]
+fn lock_holder_process() {
+    let (Ok(database_path), Ok(ready_path)) = (
+        std::env::var(LOCK_TEST_DATABASE),
+        std::env::var(LOCK_TEST_READY),
+    ) else {
+        return;
+    };
+    let _store = Store::open(database_path, DIMENSIONS, 10).unwrap();
+    std::fs::write(ready_path, b"ready").unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn writer_lock_excludes_another_process() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("graph.db");
+    let ready_path = directory.path().join("ready");
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "lock_holder_process", "--nocapture"])
+        .env(LOCK_TEST_DATABASE, &database_path)
+        .env(LOCK_TEST_READY, &ready_path)
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !ready_path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(ready_path.exists(), "child did not acquire writer lock");
+
+    let result = Store::open(&database_path, DIMENSIONS, 10);
+
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(matches!(result, Err(Error::WriterLocked(_))));
 }
