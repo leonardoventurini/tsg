@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use fs2::FileExt;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, Connection, DatabaseName, OpenFlags, OptionalExtension};
 
 use crate::error::{Error, Result};
 use crate::types::{
@@ -107,6 +107,7 @@ pub struct Store {
     durability: Durability,
     read_only: bool,
     _writer_lock: Option<File>,
+    migration_backup: Option<PathBuf>,
 }
 
 impl Store {
@@ -157,18 +158,24 @@ impl Store {
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
         };
-        let connection = Connection::open_with_flags(database_path, flags)?;
+        let mut connection = Connection::open_with_flags(database_path, flags)?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
-        if builder.read_only {
+        let migration_backup = if builder.read_only {
             validate_schema(&connection)?;
+            None
         } else {
             connection.execute_batch("PRAGMA journal_mode = WAL;")?;
             match builder.durability {
                 Durability::Full => connection.execute_batch("PRAGMA synchronous = FULL;")?,
                 Durability::Normal => connection.execute_batch("PRAGMA synchronous = NORMAL;")?,
             }
-            initialize_schema(&connection, builder.dimensions)?;
-        }
+            initialize_schema(
+                &mut connection,
+                database_path,
+                builder.dimensions,
+                builder.durability,
+            )?
+        };
 
         let (stored_dimensions, generation): (usize, u64) = connection.query_row(
             "SELECT dimensions, generation FROM store_metadata WHERE singleton = 1",
@@ -206,6 +213,7 @@ impl Store {
             durability: builder.durability,
             read_only: builder.read_only,
             _writer_lock: writer_lock,
+            migration_backup,
         })
     }
 
@@ -217,6 +225,11 @@ impl Store {
     #[must_use]
     pub fn is_read_only(&self) -> bool {
         self.read_only
+    }
+
+    #[must_use]
+    pub fn migration_backup(&self) -> Option<&Path> {
+        self.migration_backup.as_deref()
     }
 
     /// Atomically applies nodes, edges, embeddings, and a new durable generation.
@@ -592,7 +605,12 @@ fn acquire_writer_lock(database_path: &Path) -> Result<File> {
     Ok(lock)
 }
 
-fn initialize_schema(connection: &Connection, dimensions: usize) -> Result<()> {
+fn initialize_schema(
+    connection: &mut Connection,
+    database_path: &Path,
+    dimensions: usize,
+    durability: Durability,
+) -> Result<Option<PathBuf>> {
     let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version > CURRENT_SCHEMA_VERSION {
         return Err(Error::UnsupportedSchema {
@@ -600,17 +618,37 @@ fn initialize_schema(connection: &Connection, dimensions: usize) -> Result<()> {
             supported: CURRENT_SCHEMA_VERSION,
         });
     }
-    connection.execute_batch(SCHEMA)?;
+    let has_existing_schema: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_metadata'
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    let backup = if version < CURRENT_SCHEMA_VERSION && has_existing_schema {
+        Some(create_migration_backup(
+            connection,
+            database_path,
+            version,
+            durability,
+        )?)
+    } else {
+        None
+    };
+
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(SCHEMA)?;
     let dimensions_i64 = i64::try_from(dimensions).map_err(|_| {
         Error::InvalidInput("embedding dimensions exceed SQLite integer range".to_string())
     })?;
-    connection.execute(
+    transaction.execute(
         "INSERT OR IGNORE INTO store_metadata(singleton, dimensions, generation)
          VALUES (1, ?1, 0)",
         [dimensions_i64],
     )?;
-    connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
-    Ok(())
+    transaction.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+    transaction.commit()?;
+    Ok(backup)
 }
 
 fn validate_schema(connection: &Connection) -> Result<()> {
@@ -622,6 +660,32 @@ fn validate_schema(connection: &Connection) -> Result<()> {
         });
     }
     Ok(())
+}
+
+fn create_migration_backup(
+    connection: &Connection,
+    database_path: &Path,
+    version: u32,
+    durability: Durability,
+) -> Result<PathBuf> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| Error::Storage(format!("system clock predates Unix epoch: {error}")))?
+        .as_millis();
+    let file_name = database_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("tsg.db");
+    let backup_path =
+        database_path.with_file_name(format!("{file_name}.schema-v{version}-{timestamp}.backup"));
+    connection.backup(DatabaseName::Main, &backup_path, None)?;
+    if durability == Durability::Full {
+        File::open(&backup_path)?.sync_all()?;
+        if let Some(parent) = backup_path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+    }
+    Ok(backup_path)
 }
 
 fn node_key(connection: &Connection, node_id: &str) -> Result<i64> {
