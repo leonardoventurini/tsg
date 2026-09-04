@@ -35,7 +35,7 @@ latest-stable policy without artificial transitive pins.
 
 ## Consequences
 
-Consumers need Rust 1.98 or newer for TSG 0.1.1. The policy may raise that floor
-in future releases. Lockfile use makes repository CI and releases reproducible,
-while downstream libraries still resolve dependencies according to their own
-lockfiles.
+Consumers need Rust 1.98 or newer for TSG 0.1.1 and later, including the current
+0.2 release line. The policy may raise that floor in future releases. Lockfile
+use makes repository CI and releases reproducible, while downstream libraries
+still resolve dependencies according to their own lockfiles.

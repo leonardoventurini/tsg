@@ -2,7 +2,12 @@
 
 ## Supported versions
 
-TSG is pre-1.0. Security fixes apply to the latest released minor version.
+TSG is pre-1.0. Security fixes are provided for the current release line:
+
+| Version | Supported |
+| ------- | --------- |
+| 0.2.x   | Yes       |
+| < 0.2   | No        |
 
 ## Reporting
 

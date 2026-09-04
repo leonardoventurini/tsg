@@ -1,5 +1,8 @@
 # Latest stable Rust and dependencies
 
+Status: completed historical specification for the 0.1.1 release. The current
+release line is 0.2.x and retains Rust 1.98 as its minimum supported version.
+
 Project: `tsg`
 
 Project root: `/Users/leonardo/Repositories/leonardoventurini/tsg`

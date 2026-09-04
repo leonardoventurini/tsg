@@ -1,5 +1,8 @@
 # GitHub release publishing
 
+Status: completed historical specification for the initial v0.1.0 release. The
+current release is v0.2.0 and uses the same publishing contract.
+
 ## Problem
 
 Project: TSG
