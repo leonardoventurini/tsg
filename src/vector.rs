@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use usearch::ffi::{IndexOptions, MetricKind, ScalarKind};
 
 use crate::error::{Error, Result};
-use crate::types::{Node, SearchFilter, SearchHit};
+use crate::types::{Durability, Node, SearchFilter, SearchHit};
 
 pub(crate) struct VectorAccelerator {
     index: usearch::Index,
@@ -21,6 +21,7 @@ impl VectorAccelerator {
         path: PathBuf,
         dimensions: usize,
         generation: u64,
+        durability: Durability,
     ) -> Result<Self> {
         if sidecar_generation(&path) == Some(generation) && path.exists() {
             let index = new_index(dimensions)?;
@@ -34,7 +35,25 @@ impl VectorAccelerator {
             }
         }
 
-        Self::rebuild(connection, path, dimensions, generation)
+        Self::rebuild(connection, path, dimensions, generation, durability)
+    }
+
+    pub(crate) fn open_existing(path: PathBuf, dimensions: usize, generation: u64) -> Result<Self> {
+        if sidecar_generation(&path) != Some(generation) || !path.exists() {
+            return Err(Error::AcceleratorUnavailable(
+                "sidecar is missing or stale".to_string(),
+            ));
+        }
+        let index = new_index(dimensions)?;
+        index
+            .load(path.to_string_lossy().as_ref())
+            .map_err(|error| Error::AcceleratorUnavailable(error.to_string()))?;
+        Ok(Self {
+            index,
+            path,
+            dimensions,
+            generation,
+        })
     }
 
     pub(crate) fn rebuild(
@@ -42,6 +61,7 @@ impl VectorAccelerator {
         path: PathBuf,
         dimensions: usize,
         generation: u64,
+        durability: Durability,
     ) -> Result<Self> {
         let index = new_index(dimensions)?;
         let vectors = load_vectors(connection, SearchFilter::default())?;
@@ -55,7 +75,7 @@ impl VectorAccelerator {
                 .map_err(|error| Error::Storage(format!("add vector to USearch: {error}")))?;
         }
 
-        persist_index(&index, &path, generation)?;
+        persist_index(&index, &path, generation, durability)?;
 
         Ok(Self {
             index,
@@ -250,7 +270,12 @@ fn new_index(dimensions: usize) -> Result<usearch::Index> {
         .map_err(|error| Error::Storage(format!("create USearch index: {error}")))
 }
 
-fn persist_index(index: &usearch::Index, path: &Path, generation: u64) -> Result<()> {
+fn persist_index(
+    index: &usearch::Index,
+    path: &Path,
+    generation: u64,
+    durability: Durability,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -258,16 +283,22 @@ fn persist_index(index: &usearch::Index, path: &Path, generation: u64) -> Result
     index
         .save(temporary.to_string_lossy().as_ref())
         .map_err(|error| Error::Storage(format!("save USearch index: {error}")))?;
-    File::open(&temporary)?.sync_all()?;
+    if durability == Durability::Full {
+        File::open(&temporary)?.sync_all()?;
+    }
     std::fs::rename(&temporary, path)?;
 
     let generation_path = generation_path(path);
     let generation_temporary = generation_path.with_extension("generation.tmp");
     std::fs::write(&generation_temporary, generation.to_string())?;
-    File::open(&generation_temporary)?.sync_all()?;
+    if durability == Durability::Full {
+        File::open(&generation_temporary)?.sync_all()?;
+    }
     std::fs::rename(generation_temporary, generation_path)?;
-    if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
+    if durability == Durability::Full {
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
     }
     Ok(())
 }

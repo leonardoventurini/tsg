@@ -5,9 +5,17 @@ edition = "2021"
 rust-version = "1.83"
 license = "MIT"
 description = "Transactional semantic graph storage engine"
+repository = "https://github.com/leonardoventurini/tsg"
+homepage = "https://github.com/leonardoventurini/tsg"
+documentation = "https://docs.rs/tsg"
+readme = "README.md"
+keywords = ["graph", "vector", "sqlite", "embeddings", "search"]
+categories = ["database-implementations", "data-structures"]
+exclude = ["specs/", "decisions/"]
 
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }
+fs2 = "0.4"
+rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 thiserror = "2"
 usearch = "2.16"
 
@@ -20,4 +28,3 @@ unsafe_code = "forbid"
 [lints.clippy]
 all = "warn"
 pedantic = "warn"
-

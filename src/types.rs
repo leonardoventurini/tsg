@@ -64,3 +64,20 @@ pub struct CommitReceipt {
     pub generation: u64,
     pub accelerator_ready: bool,
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Durability {
+    #[default]
+    Full,
+    Normal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoreStats {
+    pub generation: u64,
+    pub node_count: usize,
+    pub edge_count: usize,
+    pub embedding_count: usize,
+    pub accelerator_ready: bool,
+    pub read_only: bool,
+}

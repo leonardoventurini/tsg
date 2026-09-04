@@ -4,10 +4,10 @@ mod types;
 mod vector;
 
 pub use error::{Error, Result};
-pub use store::Store;
+pub use store::{Store, StoreBuilder};
 pub use types::{
-    CommitReceipt, Direction, Edge, Embedding, Node, SearchBackend, SearchFilter, SearchHit,
-    SearchResults, WriteBatch,
+    CommitReceipt, Direction, Durability, Edge, Embedding, Node, SearchBackend, SearchFilter,
+    SearchHit, SearchResults, StoreStats, WriteBatch,
 };
 
 #[cfg(test)]
@@ -232,5 +232,37 @@ mod tests {
 
         assert_eq!(results.hits[0].node.id, "node-1");
         assert!(database_path.with_extension("usearch").exists());
+    }
+
+    #[test]
+    fn writable_open_excludes_a_second_writer() {
+        let directory = TempDir::new().unwrap();
+        let database_path = directory.path().join("graph.db");
+        let _owner = Store::open(&database_path, DIMENSIONS, 4).unwrap();
+
+        let Err(error) = Store::open(&database_path, DIMENSIONS, 4) else {
+            panic!("second writer unexpectedly acquired the store");
+        };
+
+        assert!(matches!(error, Error::WriterLocked(_)));
+    }
+
+    #[test]
+    fn read_only_handle_coexists_and_rejects_mutation() {
+        let directory = TempDir::new().unwrap();
+        let database_path = directory.path().join("graph.db");
+        let mut writer = Store::open(&database_path, DIMENSIONS, 4).unwrap();
+        writer.apply_batch(&seeded_batch(2)).unwrap();
+        let mut reader = Store::builder(&database_path, DIMENSIONS)
+            .read_only(true)
+            .build()
+            .unwrap();
+
+        assert!(reader.is_read_only());
+        assert_eq!(reader.node_count().unwrap(), 2);
+        assert!(matches!(
+            reader.apply_batch(&seeded_batch(1)),
+            Err(Error::ReadOnly)
+        ));
     }
 }
