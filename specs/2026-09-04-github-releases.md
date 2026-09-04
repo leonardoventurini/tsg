@@ -60,9 +60,9 @@ tag, and observe the workflow through successful release creation.
 - [x] Document supported installation methods and authentication.
 - [x] Validate README doctests, strict documentation, workflow syntax, tests,
       and package assembly.
-- [ ] Commit and push `main`.
-- [ ] Tag and push `v0.1.0`.
-- [ ] Confirm the GitHub Release and attached assets.
+- [x] Commit and push `main`.
+- [x] Tag and push `v0.1.0`.
+- [x] Confirm the GitHub Release and attached assets.
 
 ## Verification
 
