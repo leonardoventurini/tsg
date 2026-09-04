@@ -6,8 +6,8 @@ mod vector;
 pub use error::{Error, Result};
 pub use store::{Store, StoreBuilder};
 pub use types::{
-    CommitReceipt, Direction, Durability, Edge, Embedding, Node, SearchBackend, SearchFilter,
-    SearchHit, SearchResults, StoreStats, WriteBatch,
+    CommitReceipt, DeleteReceipt, Direction, Durability, Edge, Embedding, IntegrityReport, Node,
+    SearchBackend, SearchFilter, SearchHit, SearchResults, StoreStats, WriteBatch,
 };
 
 #[cfg(test)]

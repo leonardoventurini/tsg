@@ -65,6 +65,13 @@ pub struct CommitReceipt {
     pub accelerator_ready: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeleteReceipt {
+    pub generation: u64,
+    pub nodes_deleted: usize,
+    pub accelerator_ready: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Durability {
     #[default]
@@ -80,4 +87,19 @@ pub struct StoreStats {
     pub embedding_count: usize,
     pub accelerator_ready: bool,
     pub read_only: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntegrityReport {
+    pub generation: u64,
+    pub sqlite_ok: bool,
+    pub accelerator_ready: bool,
+    pub issues: Vec<String>,
+}
+
+impl IntegrityReport {
+    #[must_use]
+    pub fn is_healthy(&self) -> bool {
+        self.sqlite_ok && self.accelerator_ready && self.issues.is_empty()
+    }
 }

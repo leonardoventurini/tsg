@@ -8,8 +8,8 @@ use rusqlite::{params, Connection, DatabaseName, OpenFlags, OptionalExtension};
 
 use crate::error::{Error, Result};
 use crate::types::{
-    CommitReceipt, Direction, Durability, Node, SearchBackend, SearchFilter, SearchResults,
-    StoreStats, WriteBatch,
+    CommitReceipt, DeleteReceipt, Direction, Durability, IntegrityReport, Node, SearchBackend,
+    SearchFilter, SearchResults, StoreStats, WriteBatch,
 };
 use crate::vector::{encode_vector, exact_search, VectorAccelerator};
 
@@ -322,6 +322,60 @@ impl Store {
         })
     }
 
+    /// Deletes nodes and their edges and embeddings in one transaction.
+    ///
+    /// Unknown IDs are ignored. The durable generation advances only when at
+    /// least one node is deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or duplicate ID, a read-only handle, or a
+    /// failed `SQLite` transaction.
+    pub fn delete_nodes(&mut self, node_ids: &[String]) -> Result<DeleteReceipt> {
+        self.require_writable()?;
+        if node_ids.is_empty() || node_ids.iter().any(|node_id| node_id.trim().is_empty()) {
+            return Err(Error::InvalidInput(
+                "delete requires at least one non-empty node ID".to_string(),
+            ));
+        }
+        let unique: HashSet<&str> = node_ids.iter().map(String::as_str).collect();
+        if unique.len() != node_ids.len() {
+            return Err(Error::InvalidInput(
+                "delete node IDs must be unique".to_string(),
+            ));
+        }
+
+        let transaction = self.connection.transaction()?;
+        let mut nodes_deleted = 0_usize;
+        for node_id in node_ids {
+            nodes_deleted += transaction.execute("DELETE FROM nodes WHERE id = ?1", [node_id])?;
+        }
+        let generation = if nodes_deleted == 0 {
+            transaction.rollback()?;
+            self.generation()?
+        } else {
+            let generation = transaction.query_row(
+                "UPDATE store_metadata SET generation = generation + 1
+                 WHERE singleton = 1 RETURNING generation",
+                [],
+                |row| row.get(0),
+            )?;
+            transaction.commit()?;
+            generation
+        };
+
+        let accelerator_ready = if nodes_deleted == 0 {
+            self.accelerator_ready(generation)?
+        } else {
+            self.rebuild_accelerator(generation)
+        };
+        Ok(DeleteReceipt {
+            generation,
+            nodes_deleted,
+            accelerator_ready,
+        })
+    }
+
     /// Searches canonical embeddings using the requested retrieval strategy.
     ///
     /// # Errors
@@ -343,8 +397,12 @@ impl Store {
         }
 
         let candidate_count = self.candidate_count(filter)?;
+        let accelerator_unavailable =
+            self.read_only && !self.accelerator_ready(self.generation()?)?;
         let backend = match requested_backend {
-            SearchBackend::Adaptive if candidate_count <= self.exact_search_threshold => {
+            SearchBackend::Adaptive
+                if candidate_count <= self.exact_search_threshold || accelerator_unavailable =>
+            {
                 SearchBackend::Exact
             }
             SearchBackend::Adaptive => SearchBackend::Usearch,
@@ -486,12 +544,7 @@ impl Store {
         let edge_count = self
             .connection
             .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))?;
-        let accelerator_ready = self
-            .accelerator
-            .lock()
-            .map_err(|_| Error::Storage("vector accelerator lock is poisoned".to_string()))?
-            .as_ref()
-            .is_some_and(|accelerator| accelerator.is_current(generation));
+        let accelerator_ready = self.accelerator_ready(generation)?;
 
         Ok(StoreStats {
             generation,
@@ -503,12 +556,110 @@ impl Store {
         })
     }
 
+    /// Checks durable relational integrity, vector payload shape, and sidecar currency.
+    ///
+    /// This operation never repairs or mutates the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the diagnostic queries themselves cannot run.
+    pub fn verify_integrity(&self) -> Result<IntegrityReport> {
+        let generation = self.generation()?;
+        let integrity: String = self
+            .connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        let sqlite_ok = integrity == "ok";
+        let mut issues = Vec::new();
+        if !sqlite_ok {
+            issues.push(format!("SQLite integrity check failed: {integrity}"));
+        }
+        let expected_bytes = self
+            .dimensions
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| Error::Storage("embedding byte width overflow".to_string()))?;
+        let malformed_vectors: usize = self.connection.query_row(
+            "SELECT COUNT(*) FROM embeddings WHERE length(vector) != ?1",
+            [i64::try_from(expected_bytes).map_err(|_| {
+                Error::Storage("embedding byte width exceeds SQLite integer range".to_string())
+            })?],
+            |row| row.get(0),
+        )?;
+        if malformed_vectors > 0 {
+            issues.push(format!(
+                "{malformed_vectors} canonical vector payload(s) have an invalid byte length"
+            ));
+        }
+        let foreign_key_issue: Option<String> = self
+            .connection
+            .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
+            .optional()?;
+        if foreign_key_issue.is_some() {
+            issues.push("foreign-key violations detected".to_string());
+        }
+
+        Ok(IntegrityReport {
+            generation,
+            sqlite_ok,
+            accelerator_ready: self.accelerator_ready(generation)?,
+            issues,
+        })
+    }
+
+    /// Rebuilds the `USearch` accelerator from canonical `SQLite` embeddings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for read-only handles, poisoned synchronization, or
+    /// sidecar construction and persistence failure.
+    pub fn repair_accelerator(&self) -> Result<()> {
+        self.require_writable()?;
+        let generation = self.generation()?;
+        let rebuilt = VectorAccelerator::rebuild(
+            &self.connection,
+            self.vector_path.clone(),
+            self.dimensions,
+            generation,
+            self.durability,
+        )?;
+        *self
+            .accelerator
+            .lock()
+            .map_err(|_| Error::Storage("vector accelerator lock is poisoned".to_string()))? =
+            Some(rebuilt);
+        Ok(())
+    }
+
     fn require_writable(&self) -> Result<()> {
         if self.read_only {
             Err(Error::ReadOnly)
         } else {
             Ok(())
         }
+    }
+
+    fn accelerator_ready(&self, generation: u64) -> Result<bool> {
+        Ok(self
+            .accelerator
+            .lock()
+            .map_err(|_| Error::Storage("vector accelerator lock is poisoned".to_string()))?
+            .as_ref()
+            .is_some_and(|accelerator| accelerator.is_current(generation)))
+    }
+
+    fn rebuild_accelerator(&self, generation: u64) -> bool {
+        let rebuilt = VectorAccelerator::rebuild(
+            &self.connection,
+            self.vector_path.clone(),
+            self.dimensions,
+            generation,
+            self.durability,
+        )
+        .ok();
+        let ready = rebuilt.is_some();
+        if let Ok(mut accelerator) = self.accelerator.lock() {
+            *accelerator = rebuilt;
+        }
+        ready
     }
 
     fn validate_batch(&self, batch: &WriteBatch) -> Result<()> {
