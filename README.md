@@ -67,22 +67,72 @@ dimension recorded in an existing database.
 
 ## Installation
 
-For another crate in the same workspace or machine:
+TSG is currently distributed through its private GitHub repository and versioned
+GitHub Releases. It is not yet published to crates.io or GitHub Packages.
+
+### Local path
+
+For another crate on the same machine:
 
 ```toml
 [dependencies]
 tsg = { path = "../tsg" }
 ```
 
-Consumers with access to the private repository can pin a Git revision:
+### Versioned Git tag
+
+Authenticated consumers should pin a release tag over SSH:
 
 ```toml
 [dependencies]
-tsg = { git = "https://github.com/leonardoventurini/tsg", rev = "<commit-sha>" }
+tsg = { git = "ssh://git@github.com/leonardoventurini/tsg.git", tag = "v0.1.0" }
 ```
 
-Pin production consumers to an immutable revision until versioned crates.io
-releases begin.
+The machine or CI runner must have a GitHub account or deploy key with access to
+the private repository. If Cargo cannot use the environment's normal Git
+authentication, enable its Git CLI transport in `.cargo/config.toml`:
+
+```toml
+[net]
+git-fetch-with-cli = true
+```
+
+For maximum supply-chain pinning, use the release commit instead of a movable
+reference:
+
+```toml
+[dependencies]
+tsg = { git = "ssh://git@github.com/leonardoventurini/tsg.git", rev = "<full-commit-sha>" }
+```
+
+Commit `Cargo.lock` in applications so Cargo records the resolved source
+revision.
+
+### GitHub Release archive
+
+Each `v*` release contains the platform-independent `tsg-<version>.crate`
+source archive and `SHA256SUMS`. Download and verify it with an authenticated
+GitHub CLI:
+
+```sh
+gh release download v0.1.0 \
+  --repo leonardoventurini/tsg \
+  --pattern 'tsg-*.crate' \
+  --pattern SHA256SUMS
+sha256sum --check SHA256SUMS
+mkdir -p vendor
+tar -xzf tsg-0.1.0.crate -C vendor
+```
+
+Reference the unpacked directory as a path dependency:
+
+```toml
+[dependencies]
+tsg = { path = "vendor/tsg-0.1.0" }
+```
+
+GitHub Releases are durable artifact distribution, not a Cargo registry, so
+Cargo cannot use the attached `.crate` URL directly as a dependency.
 
 ## Quick start
 
