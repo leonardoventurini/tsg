@@ -89,12 +89,12 @@ followed by measured shadow reads before any storage cutover.
 ## Executable checklist
 
 - [x] Initialize the standalone repository and record the agreed architecture.
-- [ ] Write transactional, traversal, parity, adaptive, and reopen tests.
-- [ ] Implement schema, typed contracts, and transactional batch writes.
-- [ ] Implement bounded traversal and exact cosine retrieval.
-- [ ] Implement the generation-tagged USearch accelerator and adaptive planner.
-- [ ] Run `cargo fmt --check`.
-- [ ] Run `cargo clippy --all-targets --all-features -- -D warnings`.
-- [ ] Run `cargo test`.
-- [ ] Record the resulting architectural decision.
+- [x] Write transactional, traversal, parity, adaptive, and reopen tests.
+- [x] Implement schema, typed contracts, and transactional batch writes.
+- [x] Implement bounded traversal and exact cosine retrieval.
+- [x] Implement the generation-tagged USearch accelerator and adaptive planner.
+- [x] Run `cargo fmt --check`.
+- [x] Run `cargo clippy --all-targets --all-features -- -D warnings`.
+- [x] Run `cargo test`.
+- [x] Record the resulting architectural decision.
 
