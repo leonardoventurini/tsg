@@ -50,6 +50,6 @@ Verify locally with Rust 1.98 stable, commit and push the correction, create tag
 - [x] Update CI toolchains and locked commands.
 - [x] Update README and changelog.
 - [x] Verify formatting, lints, tests, docs, packaging, and workflow syntax.
-- [ ] Commit and push.
+- [x] Commit and push.
 - [ ] Tag and publish TSG 0.1.1.
 - [ ] Confirm all CI jobs and release assets.
