@@ -6,6 +6,8 @@ use tsg::{
 const DIMENSIONS: usize = 8;
 const LOCK_TEST_DATABASE: &str = "TSG_LOCK_TEST_DATABASE";
 const LOCK_TEST_READY: &str = "TSG_LOCK_TEST_READY";
+const CRASH_TEST_DATABASE: &str = "TSG_CRASH_TEST_DATABASE";
+const CRASH_TEST_READY: &str = "TSG_CRASH_TEST_READY";
 
 fn vector(axis: usize) -> Vec<f32> {
     let mut vector = vec![0.0; DIMENSIONS];
@@ -168,4 +170,73 @@ fn writer_lock_excludes_another_process() {
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(matches!(result, Err(Error::WriterLocked(_))));
+}
+
+#[test]
+fn crash_writer_process() {
+    let (Ok(database_path), Ok(ready_path)) = (
+        std::env::var(CRASH_TEST_DATABASE),
+        std::env::var(CRASH_TEST_READY),
+    ) else {
+        return;
+    };
+    let mut store = Store::open(database_path, DIMENSIONS, 0).unwrap();
+    let mut nodes = Vec::with_capacity(10_000);
+    let mut embeddings = Vec::with_capacity(10_000);
+    for index in 0..10_000 {
+        let id = format!("crash-{index}");
+        nodes.push(Node {
+            id: id.clone(),
+            repository_id: 1,
+            kind: "function".to_string(),
+            name: id.clone(),
+            content: String::new(),
+        });
+        embeddings.push(Embedding {
+            node_id: id,
+            vector: vector(index % DIMENSIONS),
+        });
+    }
+    std::fs::write(ready_path, b"ready").unwrap();
+    let _receipt = store.apply_batch(&WriteBatch {
+        nodes,
+        embeddings,
+        ..WriteBatch::default()
+    });
+}
+
+#[test]
+fn killed_writer_recovers_to_a_complete_generation() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("graph.db");
+    let ready_path = directory.path().join("ready");
+    {
+        let mut store = Store::open(&database_path, DIMENSIONS, 0).unwrap();
+        let mut initial = batch();
+        initial.nodes.truncate(1);
+        initial.embeddings.truncate(1);
+        initial.edges.clear();
+        store.apply_batch(&initial).unwrap();
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "crash_writer_process", "--nocapture"])
+        .env(CRASH_TEST_DATABASE, &database_path)
+        .env(CRASH_TEST_READY, &ready_path)
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !ready_path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(ready_path.exists(), "child did not begin its write");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    let recovered = Store::open(&database_path, DIMENSIONS, 0).unwrap();
+    let stats = recovered.stats().unwrap();
+
+    assert!(matches!(stats.generation, 1 | 2));
+    assert!(matches!(stats.node_count, 1 | 10_001));
+    assert!(recovered.verify_integrity().unwrap().is_healthy());
 }
