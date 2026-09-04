@@ -19,7 +19,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-targets --all-features --locked
       - run: cargo package --locked
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tsg-${{ matrix.os }}-${{ github.ref_name }}
           path: target/package/tsg-*.crate
