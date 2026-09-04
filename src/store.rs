@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
 );
 ";
 
+/// Configures and opens a [`Store`].
 pub struct StoreBuilder {
     database_path: PathBuf,
     dimensions: usize,
@@ -58,6 +59,7 @@ pub struct StoreBuilder {
 }
 
 impl StoreBuilder {
+    /// Creates a builder with full durability and a 10,000-candidate exact threshold.
     #[must_use]
     pub fn new(database_path: impl Into<PathBuf>, dimensions: usize) -> Self {
         Self {
@@ -69,18 +71,21 @@ impl StoreBuilder {
         }
     }
 
+    /// Sets the maximum candidate count served by exact scan in adaptive mode.
     #[must_use]
     pub fn exact_search_threshold(mut self, threshold: usize) -> Self {
         self.exact_search_threshold = threshold;
         self
     }
 
+    /// Sets the power-loss durability policy.
     #[must_use]
     pub fn durability(mut self, durability: Durability) -> Self {
         self.durability = durability;
         self
     }
 
+    /// Selects a non-mutating read-only handle.
     #[must_use]
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
@@ -98,6 +103,7 @@ impl StoreBuilder {
     }
 }
 
+/// Transactional semantic graph handle.
 pub struct Store {
     connection: Connection,
     dimensions: usize,
@@ -217,16 +223,19 @@ impl Store {
         })
     }
 
+    /// Creates a configurable store builder.
     #[must_use]
     pub fn builder(database_path: impl Into<PathBuf>, dimensions: usize) -> StoreBuilder {
         StoreBuilder::new(database_path, dimensions)
     }
 
+    /// Returns whether this handle rejects mutation and repair.
     #[must_use]
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }
 
+    /// Returns the backup created by an automatic migration during this open.
     #[must_use]
     pub fn migration_backup(&self) -> Option<&Path> {
         self.migration_backup.as_deref()

@@ -121,15 +121,14 @@ SCS integration must begin with an inactive adapter and shadow-read validation.
 ## Executable checklist
 
 - [x] Agree production, compatibility, durability, platform, and distribution scope.
-- [ ] Introduce builder, durability, writer locking, read-only behavior, and typed errors.
-- [ ] Add schema migrations with pre-migration backup and future-version rejection.
-- [ ] Add transactional deletion, integrity reporting, repair, and statistics.
-- [ ] Harden sidecar persistence, corruption recovery, and generation semantics.
-- [ ] Add integration, E2E, property, migration, corruption, and concurrency tests.
-- [ ] Add deterministic performance/recall gates and a one-million-record harness.
-- [ ] Add coverage, supply-chain, macOS/Linux, MSRV, documentation, and package CI.
-- [ ] Add public documentation, security policy, changelog, license, and release guidance.
-- [ ] Run the complete local verification matrix that is available in the environment.
-- [ ] Record production architecture and compatibility decisions.
-- [ ] Commit every verified unit with path-limited staging.
-
+- [x] Introduce builder, durability, writer locking, read-only behavior, and typed errors.
+- [x] Add schema migrations with pre-migration backup and future-version rejection.
+- [x] Add transactional deletion, integrity reporting, repair, and statistics.
+- [x] Harden sidecar persistence, corruption recovery, and generation semantics.
+- [x] Add integration, E2E, property, migration, corruption, and concurrency tests.
+- [x] Add deterministic performance/recall gates and a one-million-record harness.
+- [x] Add coverage, supply-chain, macOS/Linux, MSRV, documentation, and package CI.
+- [x] Add public documentation, security policy, changelog, license, and release guidance.
+- [x] Run the complete local verification matrix that is available in the environment.
+- [x] Record production architecture and compatibility decisions.
+- [x] Commit every verified unit with path-limited staging.
