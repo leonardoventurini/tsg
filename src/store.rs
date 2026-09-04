@@ -112,8 +112,17 @@ pub struct Store {
     vector_path: PathBuf,
     durability: Durability,
     read_only: bool,
-    _writer_lock: Option<File>,
+    writer_lock: Option<File>,
     migration_backup: Option<PathBuf>,
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        if let Some(writer_lock) = &self.writer_lock {
+            // Explicit release avoids relying on platform-specific close timing.
+            let _ = FileExt::unlock(writer_lock);
+        }
+    }
 }
 
 impl Store {
@@ -220,7 +229,7 @@ impl Store {
             vector_path,
             durability: builder.durability,
             read_only: builder.read_only,
-            _writer_lock: writer_lock,
+            writer_lock,
             migration_backup,
         })
     }

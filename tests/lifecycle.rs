@@ -103,6 +103,16 @@ fn corrupt_sidecar_is_rebuilt_from_canonical_vectors() {
 }
 
 #[test]
+fn writer_lock_is_immediately_reusable_after_drop() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("graph.db");
+
+    for _ in 0..10 {
+        drop(Store::open(&database_path, DIMENSIONS, 1).unwrap());
+    }
+}
+
+#[test]
 fn readonly_adaptive_search_falls_back_when_sidecar_is_missing() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("graph.db");
