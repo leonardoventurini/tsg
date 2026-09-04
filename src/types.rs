@@ -15,7 +15,7 @@ pub struct Node {
     pub attributes: serde_json::Value,
 }
 
-/// Directed typed relationship between two nodes in the same repository.
+/// Directed typed relationship between two nodes in the same application scope.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Edge {
     /// Stable caller-owned identifier.

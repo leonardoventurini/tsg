@@ -8,7 +8,6 @@ For `project.db`, TSG may own:
 - `project.tsg.lock`: advisory single-writer lock;
 - `project.usearch`: rebuildable vector accelerator;
 - `project.usearch.generation`: accelerator generation marker;
-- `project.db.schema-v<version>-<timestamp>.backup`: pre-migration backup.
 
 Protect every file as sensitive source-derived data. Do not copy a live SQLite
 database and omit its WAL; use SQLite's backup mechanism or stop the writer.
@@ -20,9 +19,10 @@ not, open writable and call `Store::repair_accelerator`. Deleting only the
 `.usearch` file and its generation marker is also recoverable because a writable
 open reconstructs them from canonical embeddings.
 
-If a migration fails, retain the failed database and restore the newest
-pre-migration `.backup` file to a separate path before replacing anything. TSG
-never overwrites migration backups.
+Schema versions that require a rebuild fail with `Error::ReindexRequired` and
+leave the existing database unchanged. Create a fresh database at a separate
+path, rebuild it from the application's source of truth, verify it, and only
+then retire the prior store.
 
 An SQLite integrity failure is not repaired automatically. Restore a known-good
 backup and rebuild the sidecar. Never treat the sidecar as a backup of canonical
@@ -46,4 +46,3 @@ latency percentiles, RSS, disk consumption, and recall against exact search.
 The current implementation rebuilds USearch after every changed batch and
 exhaustively post-filters accelerated results. Production ingestion should use
 large bounded batches until incremental sidecar replay is implemented.
-

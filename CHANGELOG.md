@@ -4,6 +4,23 @@ All notable changes are recorded here. TSG follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-04
+
+### Added
+
+- Generic application scopes, node and edge JSON attributes, stable weighted
+  edge identities, and opt-in indexed attribute paths.
+- Transactional namespaced catalog records committed with graph and embedding
+  mutations.
+- Stable paginated node reads, attribute equality queries, missing-vector
+  discovery, edge reads, and edge deletion.
+
+### Changed
+
+- Replaced repository-specific terminology with generic application scopes.
+- Version 0.1 and legacy stores now fail with `Error::ReindexRequired`; consumers
+  must build a fresh 0.2 store.
+
 ## [0.1.1] - 2026-09-04
 
 ### Changed

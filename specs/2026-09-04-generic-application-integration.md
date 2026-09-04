@@ -78,10 +78,10 @@ provide its immutable tag and commit for consumers.
 
 ## Executable checklist
 
-- [ ] Design public types and test acceptance contracts.
-- [ ] Implement schema and transaction evolution.
-- [ ] Implement typed generic read/query APIs.
-- [ ] Add lifecycle, property, migration-rejection, and E2E coverage.
-- [ ] Update README, operations guide, changelog, and decision record.
+- [x] Design public types and test acceptance contracts.
+- [x] Implement schema and transaction evolution.
+- [x] Implement typed generic read/query APIs.
+- [x] Add lifecycle, property, migration-rejection, and E2E coverage.
+- [x] Update README, operations guide, changelog, and decision record.
 - [ ] Run all local and GitHub verification.
 - [ ] Publish TSG 0.2.0 and verify release assets.

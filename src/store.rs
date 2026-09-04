@@ -143,7 +143,6 @@ pub struct Store {
     durability: Durability,
     read_only: bool,
     writer_lock: Option<File>,
-    migration_backup: Option<PathBuf>,
 }
 
 impl Drop for Store {
@@ -205,9 +204,8 @@ impl Store {
         };
         let mut connection = Connection::open_with_flags(database_path, flags)?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
-        let migration_backup = if builder.read_only {
+        if builder.read_only {
             validate_schema(&connection)?;
-            None
         } else {
             connection.execute_batch("PRAGMA journal_mode = WAL;")?;
             match builder.durability {
@@ -221,8 +219,7 @@ impl Store {
                 builder.durability,
             )?;
             create_node_attribute_indexes(&connection, &builder.node_attribute_indexes)?;
-            None
-        };
+        }
 
         let (stored_dimensions, generation): (i64, i64) = connection.query_row(
             "SELECT dimensions, generation FROM store_metadata WHERE singleton = 1",
@@ -262,7 +259,6 @@ impl Store {
             durability: builder.durability,
             read_only: builder.read_only,
             writer_lock,
-            migration_backup,
         })
     }
 
@@ -276,12 +272,6 @@ impl Store {
     #[must_use]
     pub fn is_read_only(&self) -> bool {
         self.read_only
-    }
-
-    /// Returns the backup created by an automatic migration during this open.
-    #[must_use]
-    pub fn migration_backup(&self) -> Option<&Path> {
-        self.migration_backup.as_deref()
     }
 
     /// Creates an application scope if absent and returns its stable identity.
@@ -709,7 +699,7 @@ impl Store {
         Ok(SearchResults { backend, hits })
     }
 
-    /// Traverses a bounded, repository-local graph neighborhood.
+    /// Traverses a bounded, scope-local graph neighborhood.
     ///
     /// # Errors
     ///

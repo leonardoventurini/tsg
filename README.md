@@ -37,17 +37,20 @@ TSG can rebuild it from `SQLite` without regenerating embeddings.
 
 ## Capabilities
 
-- Atomic batches containing node, edge, and embedding changes.
+- Atomic batches containing node, edge, embedding, and catalog changes.
 - Stable string node IDs backed by collision-free integer storage keys.
-- Repository-local, directional, cycle-safe, bounded graph traversal.
+- Scope-local, directional, cycle-safe, bounded graph traversal.
 - Exact cosine search and approximate `USearch` HNSW search.
 - Adaptive backend selection based on the filtered candidate count.
-- Search filters for repository and node kind.
+- Search filters for application scope and node kind.
+- Validated JSON attributes on nodes and edges, with opt-in equality indexes.
+- Stable application scopes and namespaced JSON catalog records.
+- Bounded node reads, attribute lookup, missing-vector discovery, and edge reads.
 - Transactional cascading node deletion.
 - Generation tracking across canonical and accelerated state.
 - Single-writer process exclusion with coexisting read-only handles.
 - Full-durability defaults and an explicit lower-sync mode.
-- Automatic forward schema migrations with pre-migration backups.
+- Fail-closed schema compatibility with an explicit pre-1.0 rebuild boundary.
 - Integrity reporting and explicit accelerator repair.
 
 TSG does not generate embeddings, parse source code, expose a server, implement
@@ -89,7 +92,7 @@ Authenticated consumers should pin a release tag over SSH:
 
 ```toml
 [dependencies]
-tsg = { git = "ssh://git@github.com/leonardoventurini/tsg.git", tag = "v0.1.1" }
+tsg = { git = "ssh://git@github.com/leonardoventurini/tsg.git", tag = "v0.2.0" }
 ```
 
 The machine or CI runner must have a GitHub account or deploy key with access to
@@ -119,20 +122,20 @@ source archive and `SHA256SUMS`. Download and verify it with an authenticated
 GitHub CLI:
 
 ```sh
-gh release download v0.1.1 \
+gh release download v0.2.0 \
   --repo leonardoventurini/tsg \
   --pattern 'tsg-*.crate' \
   --pattern SHA256SUMS
 sha256sum --check SHA256SUMS
 mkdir -p vendor
-tar -xzf tsg-0.1.1.crate -C vendor
+tar -xzf tsg-0.2.0.crate -C vendor
 ```
 
 Reference the unpacked directory as a path dependency:
 
 ```toml
 [dependencies]
-tsg = { path = "vendor/tsg-0.1.1" }
+tsg = { path = "vendor/tsg-0.2.0" }
 ```
 
 GitHub Releases are durable artifact distribution, not a Cargo registry, so
@@ -156,27 +159,33 @@ fn main() -> tsg::Result<()> {
         .exact_search_threshold(10_000)
         .build()?;
 
+    let scope = store.get_or_create_scope("workspace-a")?;
     let receipt = store.apply_batch(&WriteBatch {
         nodes: vec![
             Node {
                 id: "parser".into(),
-                repository_id: 1,
+                scope_id: Some(scope.id),
                 kind: "function".into(),
                 name: "parse".into(),
                 content: "fn parse(source: &str) { /* ... */ }".into(),
+                attributes: serde_json::json!({"qualified_name": "parser::parse"}),
             },
             Node {
                 id: "indexer".into(),
-                repository_id: 1,
+                scope_id: Some(scope.id),
                 kind: "function".into(),
                 name: "index".into(),
                 content: "fn index() { parse(\"...\"); }".into(),
+                attributes: serde_json::json!({"qualified_name": "indexer::index"}),
             },
         ],
         edges: vec![Edge {
+            id: "indexer-calls-parser".into(),
             source_id: "indexer".into(),
             target_id: "parser".into(),
             relationship: "calls".into(),
+            weight: 1.0,
+            attributes: serde_json::json!({}),
         }],
         embeddings: vec![
             Embedding {
@@ -188,6 +197,7 @@ fn main() -> tsg::Result<()> {
                 vector: vec![0.9, 0.1, 0.0, 0.0],
             },
         ],
+        ..WriteBatch::default()
     })?;
 
     assert_eq!(receipt.generation, 1);
@@ -196,8 +206,8 @@ fn main() -> tsg::Result<()> {
         &[1.0, 0.0, 0.0, 0.0],
         5,
         SearchFilter {
-            repository_id: Some(1),
-            kind: Some("function".into()),
+            scope_id: Some(scope.id),
+            kind: Some("function"),
         },
         SearchBackend::Adaptive,
     )?;
@@ -221,15 +231,17 @@ fn main() -> tsg::Result<()> {
 
 | Type | Meaning |
 | --- | --- |
-| `Node` | A stable ID, repository ID, kind, name, and source-derived content. |
-| `Edge` | A typed, directed relationship between two nodes. |
+| `Scope` | A stable application key mapped to a TSG integer ID. |
+| `Node` | A stable ID, optional scope, kind, name, content, and JSON attributes. |
+| `Edge` | A stable ID, typed direction, finite weight, and JSON attributes. |
 | `Embedding` | One canonical `f32` vector associated with a node. |
-| `WriteBatch` | Nodes, edges, and embeddings committed atomically. |
+| `CatalogRecord` | Namespaced application JSON stored outside the graph model. |
+| `WriteBatch` | Graph, embedding, and catalog mutations committed atomically. |
 | `SearchHit` | A matching node and its cosine distance. |
 
 Node IDs are application-owned strings. Edges must reference existing nodes or
 nodes included in the same batch, and both endpoints must belong to the same
-repository. Duplicate node IDs or embedding node IDs within a batch are rejected.
+scope. Duplicate identities within a batch are rejected.
 An upsert replaces the stored fields for the same node ID; an embedding upsert
 replaces that node's prior vector. Identical edges are deduplicated.
 
@@ -248,6 +260,7 @@ fn main() -> tsg::Result<()> {
         .exact_search_threshold(25_000)
         .durability(Durability::Full)
         .read_only(false)
+        .node_attribute_indexes(["$.qualified_name", "$.path"])
         .build()?;
 
     assert!(!store.is_read_only());
@@ -261,6 +274,7 @@ fn main() -> tsg::Result<()> {
 | exact-search threshold | `10_000` | Adaptive search uses exact search at or below this filtered candidate count. |
 | durability | `Durability::Full` | Synchronizes acknowledged canonical and sidecar writes. |
 | read-only | `false` | Opens a writer and acquires the per-database writer lock. |
+| node attribute indexes | none | Creates bounded equality indexes for validated JSON paths. |
 
 `Store::open(path, dimensions, threshold)` is a convenience for a writable,
 full-durability store with an explicit threshold.
@@ -269,7 +283,7 @@ full-durability store with an explicit threshold.
 
 `apply_batch` validates the complete batch before committing it. Nodes, edges,
 embeddings, and the canonical generation advance in one `SQLite` transaction.
-An invalid vector, missing endpoint, cross-repository edge, or other validation
+An invalid vector, missing endpoint, cross-scope edge, or other validation
 failure rolls back the whole batch.
 
 Each successful non-empty batch advances the generation. After the canonical
@@ -314,7 +328,7 @@ Lower distance means greater cosine similarity. Results are ordered by distance
 and then node ID for stable ties. `SearchResults::backend` reports the backend
 actually used, which is useful for telemetry and performance diagnosis.
 
-Filters can restrict `repository_id`, `kind`, both, or neither. The current
+Filters can restrict `scope_id`, `kind`, both, or neither. The current
 accelerated implementation searches the sidecar and post-filters candidates, so
 highly selective filters do not yet provide index-level pruning.
 
@@ -329,7 +343,7 @@ query distributions before choosing a production threshold.
 the relationship type, and must supply both `max_hops` and `max_results`.
 
 Traversal never returns the starting node, is cycle-safe, stays within the
-starting node's repository, and returns each reached node at most once. It is a
+starting node's scope, and returns each reached node at most once. It is a
 bounded neighborhood primitive, not a general graph-query language.
 
 ## Read-only access and concurrency
@@ -362,19 +376,12 @@ Never treat the sidecar as a backup. Back up the authoritative database using
 the `SQLite` backup mechanism or while the writer is stopped; copying only the
 main database file can omit committed WAL content.
 
-## Schema migrations
+## Schema compatibility
 
-Writable open automatically applies supported forward migrations. Before a
-migration, TSG creates a consistent backup named:
-
-```text
-project.db.schema-v<version>-<timestamp>.backup
-```
-
-`Store::migration_backup` reports the backup created by the current open. A
-database with a newer unsupported schema version fails closed. Read-only opens
-never migrate. Retain backups until the migrated store passes application-level
-verification.
+TSG 0.2 intentionally does not mutate 0.1 or legacy stores in place. Opening
+one returns `Error::ReindexRequired`; create a fresh database and rebuild it from
+the application's source of truth. A newer unsupported schema also fails closed.
+Read-only opens never create or change schema objects.
 
 ## Health, repair, and observability
 
@@ -400,7 +407,6 @@ For a database named `project.db`, TSG may own:
 | `project.tsg.lock` | Advisory single-writer lock. |
 | `project.usearch` | Rebuildable HNSW accelerator. |
 | `project.usearch.generation` | Sidecar generation marker. |
-| `project.db.schema-v*-*.backup` | Pre-migration database backups. |
 
 Treat every file as sensitive because nodes and embeddings can disclose source
 content or derived information. TSG does not encrypt data at rest; use filesystem

@@ -15,7 +15,6 @@ channel.
 ## Data boundary
 
 TSG performs no network access or telemetry. SQLite databases, WAL files,
-migration backups, lock files, and USearch sidecars remain local. Callers must
+database backups, lock files, and USearch sidecars remain local. Callers must
 protect all of them as sensitive data. Advisory locking is supported only on
 local filesystems; NFS and SMB are outside the security and correctness model.
-

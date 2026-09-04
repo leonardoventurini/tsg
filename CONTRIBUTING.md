@@ -15,6 +15,5 @@ cargo package --allow-dirty
 ```
 
 Behavior changes require tests. Storage changes require migration, recovery,
-and backward-compatibility coverage. Do not weaken durability or repository
+and backward-compatibility coverage. Do not weaken durability or application-scope
 isolation silently.
-
