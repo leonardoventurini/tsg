@@ -8,8 +8,9 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use crate::error::{Error, Result};
 use crate::types::{
-    CatalogRecord, CommitReceipt, DeleteReceipt, Direction, Durability, IntegrityReport, Node,
-    Scope, SearchBackend, SearchFilter, SearchResults, StoreStats, WriteBatch,
+    AttributeFilter, CatalogRecord, CommitReceipt, DeleteReceipt, Direction, Durability, Edge,
+    IntegrityReport, Node, NodeFilter, Scope, SearchBackend, SearchFilter, SearchResults,
+    StoreStats, WriteBatch,
 };
 use crate::vector::{VectorAccelerator, encode_vector, exact_search};
 
@@ -347,6 +348,97 @@ impl Store {
         key.map(|key| load_node(&self.connection, key)).transpose()
     }
 
+    /// Lists nodes in stable identifier order with bounded pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid pagination or a storage failure.
+    pub fn list_nodes(
+        &self,
+        filter: NodeFilter<'_>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Node>> {
+        let (limit, offset) = pagination(limit, offset)?;
+        let mut statement = self.connection.prepare(
+            "SELECT key FROM nodes
+             WHERE (?1 IS NULL OR scope_id = ?1) AND (?2 IS NULL OR kind = ?2)
+             ORDER BY id LIMIT ?3 OFFSET ?4",
+        )?;
+        let keys = statement
+            .query_map((filter.scope_id, filter.kind, limit, offset), |row| {
+                row.get(0)
+            })?
+            .collect::<std::result::Result<Vec<i64>, _>>()?;
+
+        keys.into_iter()
+            .map(|key| load_node(&self.connection, key))
+            .collect()
+    }
+
+    /// Lists nodes whose JSON attribute at `path` equals the supplied value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe JSON path, invalid pagination, malformed
+    /// JSON, or a storage failure.
+    pub fn find_nodes_by_attribute(
+        &self,
+        scope_id: Option<i64>,
+        filter: AttributeFilter<'_>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Node>> {
+        validate_json_path(filter.path)?;
+        let (limit, offset) = pagination(limit, offset)?;
+        let value = serde_json::to_string(filter.value)
+            .map_err(|error| Error::InvalidInput(format!("serialize filter JSON: {error}")))?;
+        let mut statement = self.connection.prepare(
+            "SELECT key FROM nodes
+             WHERE (?1 IS NULL OR scope_id = ?1)
+               AND json_extract(attributes, ?2) = json_extract(?3, '$')
+             ORDER BY id LIMIT ?4 OFFSET ?5",
+        )?;
+        let keys = statement
+            .query_map((scope_id, filter.path, value, limit, offset), |row| {
+                row.get(0)
+            })?
+            .collect::<std::result::Result<Vec<i64>, _>>()?;
+
+        keys.into_iter()
+            .map(|key| load_node(&self.connection, key))
+            .collect()
+    }
+
+    /// Lists nodes that do not yet have canonical embeddings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid pagination or a storage failure.
+    pub fn list_nodes_without_embeddings(
+        &self,
+        filter: NodeFilter<'_>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Node>> {
+        let (limit, offset) = pagination(limit, offset)?;
+        let mut statement = self.connection.prepare(
+            "SELECT n.key FROM nodes AS n LEFT JOIN embeddings AS e ON e.node_key = n.key
+             WHERE e.node_key IS NULL
+               AND (?1 IS NULL OR n.scope_id = ?1) AND (?2 IS NULL OR n.kind = ?2)
+             ORDER BY n.id LIMIT ?3 OFFSET ?4",
+        )?;
+        let keys = statement
+            .query_map((filter.scope_id, filter.kind, limit, offset), |row| {
+                row.get(0)
+            })?
+            .collect::<std::result::Result<Vec<i64>, _>>()?;
+
+        keys.into_iter()
+            .map(|key| load_node(&self.connection, key))
+            .collect()
+    }
+
     /// Atomically applies nodes, edges, embeddings, and a new durable generation.
     ///
     /// # Errors
@@ -651,6 +743,48 @@ impl Store {
         }
 
         Ok(nodes)
+    }
+
+    /// Returns incident edges in stable identifier order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the node is unknown or durable data is malformed.
+    pub fn get_edges(
+        &self,
+        node_id: &str,
+        direction: Direction,
+        relationship: Option<&str>,
+    ) -> Result<Vec<Edge>> {
+        let key = node_key(&self.connection, node_id)?;
+        let mut edge_ids = Vec::new();
+        if matches!(direction, Direction::Outgoing | Direction::Both) {
+            edge_ids.extend(self.edge_ids("source_key", key, relationship)?);
+        }
+        if matches!(direction, Direction::Incoming | Direction::Both) {
+            edge_ids.extend(self.edge_ids("target_key", key, relationship)?);
+        }
+        edge_ids.sort_unstable();
+        edge_ids.dedup();
+        let mut edges = edge_ids
+            .into_iter()
+            .map(|edge_id| load_edge(&self.connection, &edge_id))
+            .collect::<Result<Vec<_>>>()?;
+        edges.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(edges)
+    }
+
+    /// Deletes an edge by its caller-owned identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a read-only handle or a storage failure.
+    pub fn delete_edge(&mut self, edge_id: &str) -> Result<bool> {
+        self.require_writable()?;
+        Ok(self
+            .connection
+            .execute("DELETE FROM edges WHERE id = ?1", [edge_id])?
+            > 0)
     }
 
     /// Returns the current durable store generation.
@@ -1017,6 +1151,23 @@ impl Store {
         }
         Ok(keys)
     }
+
+    fn edge_ids(&self, column: &str, key: i64, relationship: Option<&str>) -> Result<Vec<String>> {
+        let sql = match column {
+            "source_key" => {
+                "SELECT id FROM edges WHERE source_key = ?1 AND (?2 IS NULL OR relationship = ?2)"
+            }
+            "target_key" => {
+                "SELECT id FROM edges WHERE target_key = ?1 AND (?2 IS NULL OR relationship = ?2)"
+            }
+            _ => unreachable!("edge column is selected internally"),
+        };
+        self.connection
+            .prepare(sql)?
+            .query_map((key, relationship), |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
 }
 
 fn acquire_writer_lock(database_path: &Path) -> Result<File> {
@@ -1168,4 +1319,61 @@ fn node_scope(connection: &Connection, key: i64) -> Result<Option<i64>> {
             row.get(0)
         })?,
     )
+}
+
+fn load_edge(connection: &Connection, edge_id: &str) -> Result<Edge> {
+    Ok(connection.query_row(
+        "SELECT e.id, source.id, target.id, e.relationship, e.weight, e.attributes
+         FROM edges AS e JOIN nodes AS source ON source.key = e.source_key
+         JOIN nodes AS target ON target.key = e.target_key WHERE e.id = ?1",
+        [edge_id],
+        |row| {
+            Ok(Edge {
+                id: row.get(0)?,
+                source_id: row.get(1)?,
+                target_id: row.get(2)?,
+                relationship: row.get(3)?,
+                weight: row.get(4)?,
+                attributes: serde_json::from_str(&row.get::<_, String>(5)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        5,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+            })
+        },
+    )?)
+}
+
+fn pagination(limit: usize, offset: usize) -> Result<(i64, i64)> {
+    if limit == 0 {
+        return Err(Error::InvalidInput(
+            "pagination limit must be positive".to_string(),
+        ));
+    }
+    Ok((
+        i64::try_from(limit)
+            .map_err(|_| Error::InvalidInput("pagination limit is too large".to_string()))?,
+        i64::try_from(offset)
+            .map_err(|_| Error::InvalidInput("pagination offset is too large".to_string()))?,
+    ))
+}
+
+fn validate_json_path(path: &str) -> Result<()> {
+    let valid = path
+        .strip_prefix("$.")
+        .is_some_and(|tail| !tail.is_empty() && tail.split('.').all(valid_json_path_segment));
+    if !valid {
+        return Err(Error::InvalidInput(format!(
+            "invalid JSON attribute path: {path}"
+        )));
+    }
+    Ok(())
+}
+
+fn valid_json_path_segment(segment: &str) -> bool {
+    segment
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '_')
 }

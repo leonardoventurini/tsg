@@ -9,9 +9,9 @@ mod vector;
 pub use error::{Error, Result};
 pub use store::{Store, StoreBuilder};
 pub use types::{
-    CatalogKey, CatalogRecord, CommitReceipt, DeleteReceipt, Direction, Durability, Edge,
-    Embedding, IntegrityReport, Node, Scope, SearchBackend, SearchFilter, SearchHit, SearchResults,
-    StoreStats, WriteBatch,
+    AttributeFilter, CatalogKey, CatalogRecord, CommitReceipt, DeleteReceipt, Direction,
+    Durability, Edge, Embedding, IntegrityReport, Node, NodeFilter, Scope, SearchBackend,
+    SearchFilter, SearchHit, SearchResults, StoreStats, WriteBatch,
 };
 
 #[cfg(test)]
@@ -433,6 +433,72 @@ mod tests {
                 edges: vec![invalid_edge],
                 ..WriteBatch::default()
             }),
+            Err(Error::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn bounded_reads_filter_attributes_missing_vectors_and_edges() {
+        let directory = TempDir::new().unwrap();
+        let mut store = store(&directory, 4);
+        let mut batch = seeded_batch(2);
+        batch.embeddings.pop();
+        batch.nodes[0].attributes = serde_json::json!({"external": {"name": "alpha"}});
+        batch.edges.push(edge("node-0", "node-1", "related"));
+        store.apply_batch(&batch).unwrap();
+
+        let page = store.list_nodes(NodeFilter::default(), 1, 1).unwrap();
+        assert_eq!(page[0].id, "node-1");
+        let matched = store
+            .find_nodes_by_attribute(
+                None,
+                AttributeFilter {
+                    path: "$.external.name",
+                    value: &serde_json::json!("alpha"),
+                },
+                10,
+                0,
+            )
+            .unwrap();
+        assert_eq!(matched[0].id, "node-0");
+        assert_eq!(
+            store
+                .list_nodes_without_embeddings(NodeFilter::default(), 10, 0)
+                .unwrap()[0]
+                .id,
+            "node-1"
+        );
+        let edges = store
+            .get_edges("node-0", Direction::Outgoing, Some("related"))
+            .unwrap();
+        assert!((edges[0].weight - 1.0).abs() < f64::EPSILON);
+        assert!(store.delete_edge(&edges[0].id).unwrap());
+        assert!(
+            store
+                .get_edges("node-0", Direction::Both, None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn attribute_reads_reject_unbounded_or_unsafe_inputs() {
+        let directory = TempDir::new().unwrap();
+        let store = store(&directory, 4);
+        assert!(matches!(
+            store.list_nodes(NodeFilter::default(), 0, 0),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            store.find_nodes_by_attribute(
+                None,
+                AttributeFilter {
+                    path: "$['unsafe']",
+                    value: &serde_json::Value::Null
+                },
+                1,
+                0,
+            ),
             Err(Error::InvalidInput(_))
         ));
     }

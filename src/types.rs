@@ -116,6 +116,24 @@ pub struct SearchFilter<'a> {
     pub kind: Option<&'a str>,
 }
 
+/// Optional scope and kind constraints for stable node reads.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NodeFilter<'a> {
+    /// Restrict results to one application scope.
+    pub scope_id: Option<i64>,
+    /// Restrict results to one caller-defined node kind.
+    pub kind: Option<&'a str>,
+}
+
+/// Equality predicate over one validated node-attribute JSON path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttributeFilter<'a> {
+    /// JSON path such as `$.qualified_name`.
+    pub path: &'a str,
+    /// JSON value compared for equality.
+    pub value: &'a serde_json::Value,
+}
+
 /// One vector search match.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
