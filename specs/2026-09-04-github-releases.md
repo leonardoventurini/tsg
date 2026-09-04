@@ -15,11 +15,12 @@ explain version-tag or release-archive installation.
 - `.github/workflows/release.yml` triggers on `v*` tags.
 - The current job packages the same platform-independent Rust source crate on
   macOS and Linux.
-- No GitHub Release or repository package currently exists.
-- TSG remains a private, unpublished pre-1.0 crate.
+- At task start, no GitHub Release or repository package existed.
+- At implementation time, TSG was a private, unpublished pre-1.0 crate. The
+  repository became public on 2026-09-04.
 
-GitHub Releases are not a Cargo registry. Consumers can use a private Git tag
-directly or download and unpack the attached crate as a vendored path dependency.
+GitHub Releases are not a Cargo registry. Consumers can use a Git tag directly
+or download and unpack the attached crate as a vendored path dependency.
 
 ## Contracts
 
@@ -28,14 +29,15 @@ directly or download and unpack the attached crate as a vendored path dependency
 - A successful tag workflow must create a GitHub Release containing the
   platform-independent `.crate` archive and a SHA-256 checksum.
 - The workflow must use only the repository-scoped token with `contents: write`.
-- README installation instructions must distinguish path, private Git tag, Git
+- README installation instructions must distinguish path, Git tag, Git
   revision, and downloaded-release workflows.
 - This task does not publish to crates.io or GitHub Packages.
 
 ## Risks
 
 - A mismatched tag could publish misleading version metadata.
-- Private consumers require explicit GitHub authentication.
+- While the repository was private, consumers required explicit GitHub
+  authentication. Public access removes that requirement.
 - Re-running a completed tag workflow cannot create the same release twice.
 
 ## Recovery

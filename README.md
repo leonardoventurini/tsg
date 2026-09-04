@@ -10,8 +10,7 @@ and vector databases.
 
 > **Project status:** TSG is pre-1.0 and its public API may still evolve. The
 > package is publish-ready but is not currently published to crates.io. The
-> repository is private, so external consumers need repository access or a
-> vendored/path dependency.
+> source repository and GitHub Releases are publicly accessible.
 
 ## Why TSG
 
@@ -74,10 +73,29 @@ the Rust stable channel and dependencies advance.
 
 ## Installation
 
-TSG is currently distributed through its private GitHub repository and versioned
-GitHub Releases. It is not yet published to crates.io or GitHub Packages.
+TSG is distributed through its public GitHub repository and versioned GitHub
+Releases. It is not yet published to crates.io or GitHub Packages.
 
-### Local path
+### Cargo dependency (recommended)
+
+Pin the current release tag over public HTTPS:
+
+```toml
+[dependencies]
+tsg = { git = "https://github.com/leonardoventurini/tsg.git", tag = "v0.2.0" }
+```
+
+No GitHub credentials or deploy key are required. Commit `Cargo.lock` in
+applications so Cargo records the exact resolved commit.
+
+For maximum supply-chain pinning, replace `tag` with the release commit:
+
+```toml
+[dependencies]
+tsg = { git = "https://github.com/leonardoventurini/tsg.git", rev = "aca4d72a5a6992e93998cad047a2339edce69e7d" }
+```
+
+### Local development
 
 For another crate on the same machine:
 
@@ -86,40 +104,11 @@ For another crate on the same machine:
 tsg = { path = "../tsg" }
 ```
 
-### Versioned Git tag
+### Release archive for vendoring
 
-Authenticated consumers should pin a release tag over SSH:
-
-```toml
-[dependencies]
-tsg = { git = "ssh://git@github.com/leonardoventurini/tsg.git", tag = "v0.2.0" }
-```
-
-The machine or CI runner must have a GitHub account or deploy key with access to
-the private repository. If Cargo cannot use the environment's normal Git
-authentication, enable its Git CLI transport in `.cargo/config.toml`:
-
-```toml
-[net]
-git-fetch-with-cli = true
-```
-
-For maximum supply-chain pinning, use the release commit instead of a movable
-reference:
-
-```toml
-[dependencies]
-tsg = { git = "ssh://git@github.com/leonardoventurini/tsg.git", rev = "<full-commit-sha>" }
-```
-
-Commit `Cargo.lock` in applications so Cargo records the resolved source
-revision.
-
-### GitHub Release archive
-
-Each `v*` release contains the platform-independent `tsg-<version>.crate`
-source archive and `SHA256SUMS`. Download and verify it with an authenticated
-GitHub CLI:
+The [TSG v0.2.0 release](https://github.com/leonardoventurini/tsg/releases/tag/v0.2.0)
+contains the platform-independent `tsg-0.2.0.crate` source archive and
+`SHA256SUMS`. Download and verify both with GitHub CLI:
 
 ```sh
 gh release download v0.2.0 \
@@ -139,7 +128,8 @@ tsg = { path = "vendor/tsg-0.2.0" }
 ```
 
 GitHub Releases are durable artifact distribution, not a Cargo registry, so
-Cargo cannot use the attached `.crate` URL directly as a dependency.
+Cargo cannot use the attached `.crate` URL directly as a dependency. Prefer the
+tagged Git dependency unless vendoring or offline installation is required.
 
 ## Quick start
 

@@ -28,9 +28,10 @@ stable Rust on macOS and Linux.
 
 ## Rationale
 
-TSG is new, private, and pre-1.0 with no established older-toolchain consumers.
-A latest-stable policy avoids artificial transitive pins that would obstruct
-maintenance and security updates.
+At the time of this decision, TSG was new, private, and pre-1.0 with no
+established older-toolchain consumers. It has since become public; the lack of
+an established compatibility baseline and its pre-1.0 status still support a
+latest-stable policy without artificial transitive pins.
 
 ## Consequences
 

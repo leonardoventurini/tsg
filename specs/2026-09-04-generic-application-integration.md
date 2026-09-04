@@ -84,4 +84,4 @@ provide its immutable tag and commit for consumers.
 - [x] Add lifecycle, property, migration-rejection, and E2E coverage.
 - [x] Update README, operations guide, changelog, and decision record.
 - [ ] Run all local and GitHub verification.
-- [ ] Publish TSG 0.2.0 and verify release assets.
+- [x] Publish TSG 0.2.0 and verify release assets.
