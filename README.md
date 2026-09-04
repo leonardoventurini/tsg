@@ -56,7 +56,7 @@ belong in the consuming application.
 
 ## Platform and compatibility
 
-- Rust 1.83 or newer.
+- Rust 1.98 or newer, using the Rust 2024 edition.
 - macOS and Linux on local filesystems.
 - One writable process per database path; read-only processes may coexist.
 - Local embedded operation only. Network filesystems and distributed writers
@@ -64,6 +64,10 @@ belong in the consuming application.
 
 The embedding dimension is fixed when a store is opened and must match the
 dimension recorded in an existing database.
+
+TSG follows a latest-stable toolchain policy rather than maintaining a long-term
+minimum Rust version. A future TSG release may raise the compiler requirement as
+the Rust stable channel and dependencies advance.
 
 ## Installation
 
@@ -85,7 +89,7 @@ Authenticated consumers should pin a release tag over SSH:
 
 ```toml
 [dependencies]
-tsg = { git = "ssh://git@github.com/leonardoventurini/tsg.git", tag = "v0.1.0" }
+tsg = { git = "ssh://git@github.com/leonardoventurini/tsg.git", tag = "v0.1.1" }
 ```
 
 The machine or CI runner must have a GitHub account or deploy key with access to
@@ -115,20 +119,20 @@ source archive and `SHA256SUMS`. Download and verify it with an authenticated
 GitHub CLI:
 
 ```sh
-gh release download v0.1.0 \
+gh release download v0.1.1 \
   --repo leonardoventurini/tsg \
   --pattern 'tsg-*.crate' \
   --pattern SHA256SUMS
 sha256sum --check SHA256SUMS
 mkdir -p vendor
-tar -xzf tsg-0.1.0.crate -C vendor
+tar -xzf tsg-0.1.1.crate -C vendor
 ```
 
 Reference the unpacked directory as a path dependency:
 
 ```toml
 [dependencies]
-tsg = { path = "vendor/tsg-0.1.0" }
+tsg = { path = "vendor/tsg-0.1.1" }
 ```
 
 GitHub Releases are durable artifact distribution, not a Cargo registry, so

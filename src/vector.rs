@@ -185,14 +185,16 @@ pub(crate) fn encode_vector(vector: &[f32]) -> Vec<u8> {
 }
 
 fn decode_vector(bytes: &[u8]) -> Result<Vec<f32>> {
-    if bytes.len() % std::mem::size_of::<f32>() != 0 {
+    if !bytes.len().is_multiple_of(std::mem::size_of::<f32>()) {
         return Err(Error::Storage(
             "stored vector byte length is invalid".to_string(),
         ));
     }
 
     Ok(bytes
-        .chunks_exact(std::mem::size_of::<f32>())
+        .as_chunks::<{ std::mem::size_of::<f32>() }>()
+        .0
+        .iter()
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect())
 }
@@ -295,10 +297,10 @@ fn persist_index(
         File::open(&generation_temporary)?.sync_all()?;
     }
     std::fs::rename(generation_temporary, generation_path)?;
-    if durability == Durability::Full {
-        if let Some(parent) = path.parent() {
-            File::open(parent)?.sync_all()?;
-        }
+    if durability == Durability::Full
+        && let Some(parent) = path.parent()
+    {
+        File::open(parent)?.sync_all()?;
     }
     Ok(())
 }

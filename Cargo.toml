@@ -1,8 +1,8 @@
 [package]
 name = "tsg"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.83"
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.98"
 license = "MIT"
 description = "Transactional semantic graph storage engine"
 repository = "https://github.com/leonardoventurini/tsg"
@@ -15,13 +15,13 @@ exclude = ["specs/", "decisions/"]
 
 [dependencies]
 fs2 = "0.4"
-rusqlite = { version = "0.32", features = ["backup", "bundled"] }
-thiserror = "2"
-usearch = "2.16"
+rusqlite = { version = "0.40", features = ["backup", "bundled"] }
+thiserror = "2.0"
+usearch = "2.26"
 
 [dev-dependencies]
-proptest = "1"
-tempfile = "3"
+proptest = "1.11"
+tempfile = "3.27"
 
 [lints.rust]
 unsafe_code = "forbid"

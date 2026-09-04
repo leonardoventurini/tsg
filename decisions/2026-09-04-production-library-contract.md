@@ -27,6 +27,8 @@ Production gates include strict formatting/lints/docs, public E2E and property
 tests, cross-process locking, migration and recovery coverage, an 85% line
 coverage floor, supply-chain policy, deterministic CI performance budgets, an
 opt-in one-million-record harness, package verification, and macOS/Linux CI.
+The toolchain policy subsequently changed to the latest stable Rust release; see
+`2026-09-04-latest-stable-rust.md`.
 
 ## Rejected alternatives
 
@@ -49,4 +51,3 @@ opt-in one-million-record harness, package verification, and macOS/Linux CI.
 - The current full USearch rebuild remains the primary ingestion-scaling
   limitation and is explicitly documented.
 - SCS remains unchanged; its eventual adoption is a separate reviewed project.
-

@@ -4,14 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use fs2::FileExt;
-use rusqlite::{params, Connection, DatabaseName, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, MAIN_DB, OpenFlags, OptionalExtension, params};
 
 use crate::error::{Error, Result};
 use crate::types::{
     CommitReceipt, DeleteReceipt, Direction, Durability, IntegrityReport, Node, SearchBackend,
     SearchFilter, SearchResults, StoreStats, WriteBatch,
 };
-use crate::vector::{encode_vector, exact_search, VectorAccelerator};
+use crate::vector::{VectorAccelerator, encode_vector, exact_search};
 
 const CURRENT_SCHEMA_VERSION: u32 = 1;
 const SCHEMA: &str = r"
@@ -140,10 +140,10 @@ impl Store {
             ));
         }
         let database_path = &builder.database_path;
-        if !builder.read_only {
-            if let Some(parent) = database_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if !builder.read_only
+            && let Some(parent) = database_path.parent()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         if builder.read_only && !database_path.exists() {
             return Err(Error::InvalidInput(format!(
@@ -183,11 +183,13 @@ impl Store {
             )?
         };
 
-        let (stored_dimensions, generation): (usize, u64) = connection.query_row(
+        let (stored_dimensions, generation): (i64, i64) = connection.query_row(
             "SELECT dimensions, generation FROM store_metadata WHERE singleton = 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+        let stored_dimensions = sql_usize(stored_dimensions, "embedding dimensions")?;
+        let generation = sql_u64(generation, "store generation")?;
         if stored_dimensions != builder.dimensions {
             return Err(Error::InvalidInput(format!(
                 "embedding dimension mismatch: stored {stored_dimensions}, requested {}",
@@ -302,12 +304,13 @@ impl Store {
                 params![source_key, target_key, edge.relationship],
             )?;
         }
-        let generation: u64 = transaction.query_row(
+        let generation: i64 = transaction.query_row(
             "UPDATE store_metadata SET generation = generation + 1
              WHERE singleton = 1 RETURNING generation",
             [],
             |row| row.get(0),
         )?;
+        let generation = sql_u64(generation, "store generation")?;
         transaction.commit()?;
 
         let rebuilt = VectorAccelerator::rebuild(
@@ -363,12 +366,13 @@ impl Store {
             transaction.rollback()?;
             self.generation()?
         } else {
-            let generation = transaction.query_row(
+            let generation: i64 = transaction.query_row(
                 "UPDATE store_metadata SET generation = generation + 1
                  WHERE singleton = 1 RETURNING generation",
                 [],
                 |row| row.get(0),
             )?;
+            let generation = sql_u64(generation, "store generation")?;
             transaction.commit()?;
             generation
         };
@@ -514,11 +518,13 @@ impl Store {
     ///
     /// Returns an error when metadata cannot be read.
     pub fn generation(&self) -> Result<u64> {
-        Ok(self.connection.query_row(
+        let generation = self.connection.query_row(
             "SELECT generation FROM store_metadata WHERE singleton = 1",
             [],
             |row| row.get(0),
-        )?)
+        )?;
+
+        sql_u64(generation, "store generation")
     }
 
     /// Returns the number of durable nodes.
@@ -527,9 +533,11 @@ impl Store {
     ///
     /// Returns an error when `SQLite` cannot execute the count.
     pub fn node_count(&self) -> Result<usize> {
-        Ok(self
+        let count = self
             .connection
-            .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))?)
+            .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))?;
+
+        sql_usize(count, "node count")
     }
 
     /// Returns the number of durable canonical embeddings.
@@ -538,9 +546,11 @@ impl Store {
     ///
     /// Returns an error when `SQLite` cannot execute the count.
     pub fn embedding_count(&self) -> Result<usize> {
-        Ok(self
+        let count = self
             .connection
-            .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))?)
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))?;
+
+        sql_usize(count, "embedding count")
     }
 
     /// Returns operational counts and accelerator readiness.
@@ -553,6 +563,7 @@ impl Store {
         let edge_count = self
             .connection
             .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))?;
+        let edge_count = sql_usize(edge_count, "edge count")?;
         let accelerator_ready = self.accelerator_ready(generation)?;
 
         Ok(StoreStats {
@@ -586,13 +597,14 @@ impl Store {
             .dimensions
             .checked_mul(std::mem::size_of::<f32>())
             .ok_or_else(|| Error::Storage("embedding byte width overflow".to_string()))?;
-        let malformed_vectors: usize = self.connection.query_row(
+        let malformed_vectors: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM embeddings WHERE length(vector) != ?1",
             [i64::try_from(expected_bytes).map_err(|_| {
                 Error::Storage("embedding byte width exceeds SQLite integer range".to_string())
             })?],
             |row| row.get(0),
         )?;
+        let malformed_vectors = sql_usize(malformed_vectors, "malformed vector count")?;
         if malformed_vectors > 0 {
             issues.push(format!(
                 "{malformed_vectors} canonical vector payload(s) have an invalid byte length"
@@ -709,14 +721,16 @@ impl Store {
     }
 
     fn candidate_count(&self, filter: SearchFilter<'_>) -> Result<usize> {
-        Ok(self.connection.query_row(
+        let count = self.connection.query_row(
             "SELECT COUNT(*) FROM nodes AS n
              JOIN embeddings AS e ON e.node_key = n.key
              WHERE (?1 IS NULL OR n.repository_id = ?1)
                AND (?2 IS NULL OR n.kind = ?2)",
             (filter.repository_id, filter.kind),
             |row| row.get(0),
-        )?)
+        )?;
+
+        sql_usize(count, "search candidate count")
     }
 
     fn neighbor_keys(
@@ -838,7 +852,7 @@ fn create_migration_backup(
         .unwrap_or("tsg.db");
     let backup_path =
         database_path.with_file_name(format!("{file_name}.schema-v{version}-{timestamp}.backup"));
-    connection.backup(DatabaseName::Main, &backup_path, None)?;
+    connection.backup(MAIN_DB, &backup_path, None)?;
     if durability == Durability::Full {
         File::open(&backup_path)?.sync_all()?;
         if let Some(parent) = backup_path.parent() {
@@ -846,6 +860,22 @@ fn create_migration_backup(
         }
     }
     Ok(backup_path)
+}
+
+/**
+ * Converts a non-negative `SQLite` integer into an in-memory count without
+ * relying on platform-width SQL decoding.
+ */
+fn sql_usize(value: i64, label: &str) -> Result<usize> {
+    usize::try_from(value)
+        .map_err(|_| Error::Storage(format!("stored {label} is negative or too large")))
+}
+
+/**
+ * Converts a non-negative `SQLite` integer into a public generation value.
+ */
+fn sql_u64(value: i64, label: &str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| Error::Storage(format!("stored {label} is negative")))
 }
 
 fn node_key(connection: &Connection, node_id: &str) -> Result<i64> {
