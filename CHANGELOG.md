@@ -13,7 +13,9 @@ All notable changes are recorded here. TSG follows Semantic Versioning.
 - Transactional namespaced catalog records committed with graph and embedding
   mutations.
 - Stable paginated node reads, attribute equality queries, missing-vector
-  discovery, edge reads, and edge deletion.
+  discovery, filtered counts, name and batch reads, edge reads, and edge
+  deletion.
+- Explicit embedding reset, full-store truncation, and vacuum operations.
 
 ### Changed
 

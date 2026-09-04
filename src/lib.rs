@@ -502,4 +502,40 @@ mod tests {
             Err(Error::InvalidInput(_))
         ));
     }
+
+    #[test]
+    fn filtered_counts_name_reads_and_resets_are_consistent() {
+        let directory = TempDir::new().unwrap();
+        let mut store = store(&directory, 4);
+        let mut batch = seeded_batch(2);
+        batch.embeddings.pop();
+        store.apply_batch(&batch).unwrap();
+
+        assert_eq!(store.count_nodes(NodeFilter::default()).unwrap(), 2);
+        assert_eq!(
+            store
+                .count_nodes_without_embeddings(NodeFilter::default())
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .find_nodes_by_name("NAME_NODE-1", NodeFilter::default(), 10, 0)
+                .unwrap()[0]
+                .id,
+            "node-1"
+        );
+        assert_eq!(
+            store
+                .get_nodes(&["node-1".to_string(), "unknown".to_string()])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(store.clear_embeddings().unwrap(), 1);
+        assert_eq!(store.embedding_count().unwrap(), 0);
+        assert_eq!(store.truncate().unwrap(), 2);
+        assert_eq!(store.node_count().unwrap(), 0);
+        store.vacuum().unwrap();
+    }
 }

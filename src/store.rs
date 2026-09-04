@@ -444,6 +444,87 @@ impl Store {
             .collect()
     }
 
+    /// Counts nodes matching an optional scope and kind filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the storage query fails.
+    pub fn count_nodes(&self, filter: NodeFilter<'_>) -> Result<usize> {
+        let count = self.connection.query_row(
+            "SELECT COUNT(*) FROM nodes
+             WHERE (?1 IS NULL OR scope_id = ?1) AND (?2 IS NULL OR kind = ?2)",
+            (filter.scope_id, filter.kind),
+            |row| row.get(0),
+        )?;
+        sql_usize(count, "filtered node count")
+    }
+
+    /// Counts matching nodes without canonical embeddings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the storage query fails.
+    pub fn count_nodes_without_embeddings(&self, filter: NodeFilter<'_>) -> Result<usize> {
+        let count = self.connection.query_row(
+            "SELECT COUNT(*) FROM nodes AS n LEFT JOIN embeddings AS e ON e.node_key = n.key
+             WHERE e.node_key IS NULL
+               AND (?1 IS NULL OR n.scope_id = ?1) AND (?2 IS NULL OR n.kind = ?2)",
+            (filter.scope_id, filter.kind),
+            |row| row.get(0),
+        )?;
+        sql_usize(count, "missing embedding count")
+    }
+
+    /// Fetches existing nodes for a bounded set of caller-owned identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for duplicate identifiers or malformed durable data.
+    pub fn get_nodes(&self, ids: &[String]) -> Result<Vec<Node>> {
+        let mut unique = HashSet::new();
+        if ids.iter().any(|id| !unique.insert(id.as_str())) {
+            return Err(Error::InvalidInput("node IDs must be unique".to_string()));
+        }
+        ids.iter()
+            .filter_map(|id| self.get_node(id).transpose())
+            .collect()
+    }
+
+    /// Performs bounded case-insensitive substring matching over node names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty query, invalid pagination, or storage failure.
+    pub fn find_nodes_by_name(
+        &self,
+        query: &str,
+        filter: NodeFilter<'_>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Node>> {
+        if query.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "name query must not be empty".to_string(),
+            ));
+        }
+        let (limit, offset) = pagination(limit, offset)?;
+        let pattern = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
+        let mut statement = self.connection.prepare(
+            "SELECT key FROM nodes WHERE name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+             AND (?2 IS NULL OR scope_id = ?2) AND (?3 IS NULL OR kind = ?3)
+             ORDER BY name, id LIMIT ?4 OFFSET ?5",
+        )?;
+        let keys = statement
+            .query_map(
+                (pattern, filter.scope_id, filter.kind, limit, offset),
+                |row| row.get(0),
+            )?
+            .collect::<std::result::Result<Vec<i64>, _>>()?;
+        keys.into_iter()
+            .map(|key| load_node(&self.connection, key))
+            .collect()
+    }
+
     /// Atomically applies nodes, edges, embeddings, and a new durable generation.
     ///
     /// # Errors
@@ -625,6 +706,63 @@ impl Store {
             nodes_deleted,
             accelerator_ready,
         })
+    }
+
+    /// Removes every canonical embedding while retaining graph and catalog data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a read-only handle or failed durable transaction.
+    pub fn clear_embeddings(&mut self) -> Result<usize> {
+        self.require_writable()?;
+        let transaction = self.connection.transaction()?;
+        let removed = transaction.execute("DELETE FROM embeddings", [])?;
+        if removed == 0 {
+            transaction.rollback()?;
+            return Ok(0);
+        }
+        let generation: i64 = transaction.query_row(
+            "UPDATE store_metadata SET generation = generation + 1
+             WHERE singleton = 1 RETURNING generation",
+            [],
+            |row| row.get(0),
+        )?;
+        transaction.commit()?;
+        self.rebuild_accelerator(sql_u64(generation, "store generation")?);
+        Ok(removed)
+    }
+
+    /// Removes all graph, embedding, scope, and catalog records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a read-only handle or failed durable transaction.
+    pub fn truncate(&mut self) -> Result<usize> {
+        self.require_writable()?;
+        let transaction = self.connection.transaction()?;
+        let removed = transaction.execute("DELETE FROM nodes", [])?;
+        transaction.execute("DELETE FROM scopes", [])?;
+        transaction.execute("DELETE FROM catalog", [])?;
+        let generation: i64 = transaction.query_row(
+            "UPDATE store_metadata SET generation = generation + 1
+             WHERE singleton = 1 RETURNING generation",
+            [],
+            |row| row.get(0),
+        )?;
+        transaction.commit()?;
+        self.rebuild_accelerator(sql_u64(generation, "store generation")?);
+        Ok(removed)
+    }
+
+    /// Reclaims unused pages in the authoritative SQLite database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a read-only handle or storage failure.
+    pub fn vacuum(&mut self) -> Result<()> {
+        self.require_writable()?;
+        self.connection.execute_batch("VACUUM")?;
+        Ok(())
     }
 
     /// Searches canonical embeddings using the requested retrieval strategy.
