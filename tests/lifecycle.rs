@@ -44,6 +44,7 @@ fn batch() -> WriteBatch {
                 vector: vector(index),
             })
             .collect(),
+        ..WriteBatch::default()
     }
 }
 

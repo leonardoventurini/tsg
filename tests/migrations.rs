@@ -47,7 +47,7 @@ fn automatic_migration_preserves_data_and_creates_backup() {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
     assert_eq!(backup_version, 0);
-    assert_eq!(migrated_version, 1);
+    assert_eq!(migrated_version, 2);
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn future_schema_version_fails_closed() {
         error,
         Error::UnsupportedSchema {
             found: 99,
-            supported: 1
+            supported: 2
         }
     ));
 }
@@ -85,7 +85,7 @@ fn read_only_open_does_not_migrate_old_schema() {
         result,
         Err(Error::UnsupportedSchema {
             found: 0,
-            supported: 1
+            supported: 2
         })
     ));
     let version: u32 = Connection::open(&database_path)
@@ -93,4 +93,25 @@ fn read_only_open_does_not_migrate_old_schema() {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
     assert_eq!(version, 0);
+}
+
+#[test]
+fn version_one_requires_an_explicit_reindex() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("version-one.db");
+    create_version_zero_store(&database_path);
+    Connection::open(&database_path)
+        .unwrap()
+        .pragma_update(None, "user_version", 1)
+        .unwrap();
+
+    let result = Store::open(&database_path, DIMENSIONS, 10);
+
+    assert!(matches!(
+        result,
+        Err(Error::ReindexRequired {
+            found: 1,
+            required: 2
+        })
+    ));
 }

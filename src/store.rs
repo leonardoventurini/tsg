@@ -8,12 +8,12 @@ use rusqlite::{Connection, MAIN_DB, OpenFlags, OptionalExtension, params};
 
 use crate::error::{Error, Result};
 use crate::types::{
-    CommitReceipt, DeleteReceipt, Direction, Durability, IntegrityReport, Node, SearchBackend,
-    SearchFilter, SearchResults, StoreStats, WriteBatch,
+    CatalogRecord, CommitReceipt, DeleteReceipt, Direction, Durability, IntegrityReport, Node,
+    SearchBackend, SearchFilter, SearchResults, StoreStats, WriteBatch,
 };
 use crate::vector::{VectorAccelerator, encode_vector, exact_search};
 
-const CURRENT_SCHEMA_VERSION: u32 = 1;
+const CURRENT_SCHEMA_VERSION: u32 = 2;
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS store_metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS embeddings (
     node_key INTEGER PRIMARY KEY REFERENCES nodes(key) ON DELETE CASCADE,
     vector BLOB NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS catalog (
+    namespace TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL CHECK(json_valid(value)),
+    PRIMARY KEY(namespace, key)
+) WITHOUT ROWID;
 ";
 
 /// Configures and opens a [`Store`].
@@ -262,7 +269,12 @@ impl Store {
     pub fn apply_batch(&mut self, batch: &WriteBatch) -> Result<CommitReceipt> {
         self.require_writable()?;
         self.validate_batch(batch)?;
-        if batch.nodes.is_empty() && batch.edges.is_empty() && batch.embeddings.is_empty() {
+        if batch.nodes.is_empty()
+            && batch.edges.is_empty()
+            && batch.embeddings.is_empty()
+            && batch.catalog_records.is_empty()
+            && batch.catalog_deletes.is_empty()
+        {
             return Err(Error::InvalidInput(
                 "write batch must not be empty".to_string(),
             ));
@@ -311,6 +323,21 @@ impl Store {
                  VALUES (?1, ?2, ?3)
                  ON CONFLICT(source_key, relationship, target_key) DO NOTHING",
                 params![source_key, target_key, edge.relationship],
+            )?;
+        }
+        for record in &batch.catalog_records {
+            let value = serde_json::to_string(&record.value)
+                .map_err(|error| Error::InvalidInput(format!("serialize catalog JSON: {error}")))?;
+            transaction.execute(
+                "INSERT INTO catalog(namespace, key, value) VALUES (?1, ?2, json(?3))
+                 ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value",
+                params![record.namespace, record.key, value],
+            )?;
+        }
+        for record in &batch.catalog_deletes {
+            transaction.execute(
+                "DELETE FROM catalog WHERE namespace = ?1 AND key = ?2",
+                params![record.namespace, record.key],
             )?;
         }
         let generation: i64 = transaction.query_row(
@@ -562,6 +589,79 @@ impl Store {
         sql_usize(count, "embedding count")
     }
 
+    /// Returns one application catalog record by namespace and key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identifiers, malformed durable JSON, or a
+    /// storage query failure.
+    pub fn catalog_get(&self, namespace: &str, key: &str) -> Result<Option<CatalogRecord>> {
+        validate_catalog_identity(namespace, key)?;
+        let value: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value FROM catalog WHERE namespace = ?1 AND key = ?2",
+                (namespace, key),
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        value
+            .map(|value| {
+                Ok(CatalogRecord {
+                    namespace: namespace.to_string(),
+                    key: key.to_string(),
+                    value: serde_json::from_str(&value).map_err(|error| {
+                        Error::Storage(format!("stored catalog JSON is malformed: {error}"))
+                    })?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Lists one namespace in stable key order with bounded pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid namespace, a zero limit, malformed
+    /// durable JSON, or a storage query failure.
+    pub fn catalog_list(
+        &self,
+        namespace: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<CatalogRecord>> {
+        validate_catalog_namespace(namespace)?;
+        if limit == 0 {
+            return Err(Error::InvalidInput(
+                "catalog list limit must be positive".to_string(),
+            ));
+        }
+        let limit = i64::try_from(limit)
+            .map_err(|_| Error::InvalidInput("catalog list limit is too large".to_string()))?;
+        let offset = i64::try_from(offset)
+            .map_err(|_| Error::InvalidInput("catalog list offset is too large".to_string()))?;
+        let mut statement = self.connection.prepare(
+            "SELECT key, value FROM catalog
+             WHERE namespace = ?1 ORDER BY key LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = statement.query_map((namespace, limit, offset), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut records = Vec::new();
+        for row in rows {
+            let (key, value) = row?;
+            records.push(CatalogRecord {
+                namespace: namespace.to_string(),
+                key,
+                value: serde_json::from_str(&value).map_err(|error| {
+                    Error::Storage(format!("stored catalog JSON is malformed: {error}"))
+                })?,
+            });
+        }
+        Ok(records)
+    }
+
     /// Returns operational counts and accelerator readiness.
     ///
     /// # Errors
@@ -710,6 +810,30 @@ impl Store {
             }
             self.validate_vector(&embedding.vector, "embedding")?;
         }
+        let mut catalog_upserts = HashSet::new();
+        for record in &batch.catalog_records {
+            validate_catalog_identity(&record.namespace, &record.key)?;
+            if !catalog_upserts.insert((record.namespace.as_str(), record.key.as_str())) {
+                return Err(Error::InvalidInput(
+                    "catalog identities must be unique within batch upserts".to_string(),
+                ));
+            }
+        }
+        let mut catalog_deletes = HashSet::new();
+        for record in &batch.catalog_deletes {
+            validate_catalog_identity(&record.namespace, &record.key)?;
+            let identity = (record.namespace.as_str(), record.key.as_str());
+            if !catalog_deletes.insert(identity) {
+                return Err(Error::InvalidInput(
+                    "catalog identities must be unique within batch deletes".to_string(),
+                ));
+            }
+            if catalog_upserts.contains(&identity) {
+                return Err(Error::InvalidInput(
+                    "catalog identity cannot be upserted and deleted in one batch".to_string(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -808,6 +932,12 @@ fn initialize_schema(
         [],
         |row| row.get(0),
     )?;
+    if version == 1 && has_existing_schema {
+        return Err(Error::ReindexRequired {
+            found: version,
+            required: CURRENT_SCHEMA_VERSION,
+        });
+    }
     let backup = if version < CURRENT_SCHEMA_VERSION && has_existing_schema {
         Some(create_migration_backup(
             connection,
@@ -832,6 +962,25 @@ fn initialize_schema(
     transaction.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
     transaction.commit()?;
     Ok(backup)
+}
+
+fn validate_catalog_namespace(namespace: &str) -> Result<()> {
+    if namespace.trim().is_empty() {
+        return Err(Error::InvalidInput(
+            "catalog namespace must not be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_catalog_identity(namespace: &str, key: &str) -> Result<()> {
+    validate_catalog_namespace(namespace)?;
+    if key.trim().is_empty() {
+        return Err(Error::InvalidInput(
+            "catalog key must not be empty".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_schema(connection: &Connection) -> Result<()> {

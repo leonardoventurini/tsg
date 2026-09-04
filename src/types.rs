@@ -33,6 +33,26 @@ pub struct Embedding {
     pub vector: Vec<f32>,
 }
 
+/// Application-defined JSON document stored outside the graph model.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CatalogRecord {
+    /// Caller-defined namespace isolating one record family.
+    pub namespace: String,
+    /// Stable key unique within the namespace.
+    pub key: String,
+    /// Structured value serialized canonically by TSG.
+    pub value: serde_json::Value,
+}
+
+/// Identity of an application catalog record to delete.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CatalogKey {
+    /// Caller-defined namespace isolating one record family.
+    pub namespace: String,
+    /// Stable key unique within the namespace.
+    pub key: String,
+}
+
 /// Atomic collection of graph and embedding upserts.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WriteBatch {
@@ -42,6 +62,10 @@ pub struct WriteBatch {
     pub edges: Vec<Edge>,
     /// Embeddings inserted or replaced for their nodes.
     pub embeddings: Vec<Embedding>,
+    /// Application records inserted or replaced by namespace and key.
+    pub catalog_records: Vec<CatalogRecord>,
+    /// Application records deleted by namespace and key.
+    pub catalog_deletes: Vec<CatalogKey>,
 }
 
 /// Direction used by bounded graph traversal.

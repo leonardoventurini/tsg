@@ -9,8 +9,9 @@ mod vector;
 pub use error::{Error, Result};
 pub use store::{Store, StoreBuilder};
 pub use types::{
-    CommitReceipt, DeleteReceipt, Direction, Durability, Edge, Embedding, IntegrityReport, Node,
-    SearchBackend, SearchFilter, SearchHit, SearchResults, StoreStats, WriteBatch,
+    CatalogKey, CatalogRecord, CommitReceipt, DeleteReceipt, Direction, Durability, Edge,
+    Embedding, IntegrityReport, Node, SearchBackend, SearchFilter, SearchHit, SearchResults,
+    StoreStats, WriteBatch,
 };
 
 #[cfg(test)]
@@ -267,5 +268,118 @@ mod tests {
             reader.apply_batch(&seeded_batch(1)),
             Err(Error::ReadOnly)
         ));
+    }
+
+    #[test]
+    fn catalog_and_graph_commit_atomically_and_survive_reopen() {
+        let directory = TempDir::new().unwrap();
+        let database_path = directory.path().join("graph.db");
+        {
+            let mut store = Store::open(&database_path, DIMENSIONS, 4).unwrap();
+            let mut batch = seeded_batch(1);
+            batch.catalog_records.push(CatalogRecord {
+                namespace: "sources".to_string(),
+                key: "source-1".to_string(),
+                value: serde_json::json!({"digest": "abc", "ready": true}),
+            });
+
+            let receipt = store.apply_batch(&batch).unwrap();
+
+            assert_eq!(receipt.generation, 1);
+            assert_eq!(
+                store
+                    .catalog_get("sources", "source-1")
+                    .unwrap()
+                    .unwrap()
+                    .value,
+                serde_json::json!({"digest": "abc", "ready": true})
+            );
+        }
+
+        let reopened = Store::open(&database_path, DIMENSIONS, 4).unwrap();
+        assert!(
+            reopened
+                .catalog_get("sources", "source-1")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(reopened.node_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn invalid_catalog_batch_rolls_back_graph_changes() {
+        let directory = TempDir::new().unwrap();
+        let mut store = store(&directory, 4);
+        let mut batch = seeded_batch(1);
+        batch.catalog_records.push(CatalogRecord {
+            namespace: String::new(),
+            key: "source-1".to_string(),
+            value: serde_json::json!({}),
+        });
+
+        assert!(matches!(
+            store.apply_batch(&batch),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(store.node_count().unwrap(), 0);
+        assert_eq!(store.generation().unwrap(), 0);
+    }
+
+    #[test]
+    fn catalog_namespaces_paginate_and_delete_independently() {
+        let directory = TempDir::new().unwrap();
+        let mut store = store(&directory, 4);
+        let mut batch = WriteBatch::default();
+        for (namespace, key) in [("alpha", "b"), ("alpha", "a"), ("beta", "a")] {
+            batch.catalog_records.push(CatalogRecord {
+                namespace: namespace.to_string(),
+                key: key.to_string(),
+                value: serde_json::json!({"key": key}),
+            });
+        }
+        store.apply_batch(&batch).unwrap();
+
+        let page = store.catalog_list("alpha", 1, 1).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].key, "b");
+        assert!(store.catalog_get("beta", "a").unwrap().is_some());
+
+        store
+            .apply_batch(&WriteBatch {
+                catalog_deletes: vec![CatalogKey {
+                    namespace: "alpha".to_string(),
+                    key: "a".to_string(),
+                }],
+                ..WriteBatch::default()
+            })
+            .unwrap();
+
+        assert!(store.catalog_get("alpha", "a").unwrap().is_none());
+        assert!(store.catalog_get("beta", "a").unwrap().is_some());
+    }
+
+    #[test]
+    fn catalog_rejects_conflicting_operations_before_mutation() {
+        let directory = TempDir::new().unwrap();
+        let mut store = store(&directory, 4);
+        let identity = CatalogKey {
+            namespace: "settings".to_string(),
+            key: "default".to_string(),
+        };
+        let batch = WriteBatch {
+            catalog_records: vec![CatalogRecord {
+                namespace: identity.namespace.clone(),
+                key: identity.key.clone(),
+                value: serde_json::json!(true),
+            }],
+            catalog_deletes: vec![identity],
+            ..WriteBatch::default()
+        };
+
+        assert!(matches!(
+            store.apply_batch(&batch),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(store.generation().unwrap(), 0);
     }
 }

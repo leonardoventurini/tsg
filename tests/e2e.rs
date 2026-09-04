@@ -64,6 +64,7 @@ fn complete_public_api_lifecycle_survives_reopen() {
                     vector: embedding(1),
                 },
             ],
+            ..WriteBatch::default()
         };
         let commit = store.apply_batch(&batch).unwrap();
         assert!(commit.accelerator_ready);

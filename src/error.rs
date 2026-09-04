@@ -31,6 +31,15 @@ pub enum Error {
         supported: u32,
     },
 
+    /// The database uses an intentionally non-migratable pre-1.0 schema.
+    #[error("schema version {found} requires rebuilding the store for version {required}")]
+    ReindexRequired {
+        /// Version found in the database.
+        found: u32,
+        /// Version required by this crate.
+        required: u32,
+    },
+
     /// Accelerated retrieval was explicitly requested but cannot be served.
     #[error("vector accelerator is unavailable: {0}")]
     AcceleratorUnavailable(String),
