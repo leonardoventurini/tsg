@@ -73,6 +73,7 @@ pub struct StoreBuilder {
     exact_search_threshold: usize,
     durability: Durability,
     read_only: bool,
+    node_attribute_indexes: Vec<String>,
 }
 
 impl StoreBuilder {
@@ -85,6 +86,7 @@ impl StoreBuilder {
             exact_search_threshold: 10_000,
             durability: Durability::Full,
             read_only: false,
+            node_attribute_indexes: Vec::new(),
         }
     }
 
@@ -106,6 +108,17 @@ impl StoreBuilder {
     #[must_use]
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
+        self
+    }
+
+    /// Declares validated node-attribute JSON paths that require equality indexes.
+    #[must_use]
+    pub fn node_attribute_indexes<I, S>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.node_attribute_indexes = paths.into_iter().map(Into::into).collect();
         self
     }
 
@@ -206,7 +219,9 @@ impl Store {
                 database_path,
                 builder.dimensions,
                 builder.durability,
-            )?
+            )?;
+            create_node_attribute_indexes(&connection, &builder.node_attribute_indexes)?;
+            None
         };
 
         let (stored_dimensions, generation): (i64, i64) = connection.query_row(
@@ -1370,6 +1385,32 @@ fn validate_json_path(path: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn create_node_attribute_indexes(connection: &Connection, paths: &[String]) -> Result<()> {
+    let mut unique = HashSet::new();
+    for path in paths {
+        validate_json_path(path)?;
+        if !unique.insert(path) {
+            return Err(Error::InvalidInput(
+                "node attribute index paths must be unique".to_string(),
+            ));
+        }
+        let identifier = stable_path_hash(path);
+        connection.execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS tsg_node_attr_{identifier:016x} \
+             ON nodes(scope_id, json_extract(attributes, '{path}'));"
+        ))?;
+    }
+    Ok(())
+}
+
+fn stable_path_hash(path: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    path.as_bytes().iter().fold(FNV_OFFSET, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+    })
 }
 
 fn valid_json_path_segment(segment: &str) -> bool {
