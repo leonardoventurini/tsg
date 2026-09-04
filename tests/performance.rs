@@ -25,10 +25,11 @@ fn generated_batch(count: usize, dimensions: usize) -> WriteBatch {
             .collect();
         nodes.push(Node {
             id: id.clone(),
-            repository_id: 1,
+            scope_id: None,
             kind: "function".to_string(),
             name: id.clone(),
             content: String::new(),
+            attributes: serde_json::json!({}),
         });
         embeddings.push(Embedding {
             node_id: id,

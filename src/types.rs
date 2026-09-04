@@ -3,25 +3,42 @@
 pub struct Node {
     /// Stable caller-owned identifier.
     pub id: String,
-    /// Repository isolation key.
-    pub repository_id: i64,
+    /// Optional application scope identifier.
+    pub scope_id: Option<i64>,
     /// Caller-defined node category.
     pub kind: String,
     /// Human-readable node name.
     pub name: String,
     /// Searchable or inspectable source content.
     pub content: String,
+    /// Application-defined structured attributes.
+    pub attributes: serde_json::Value,
 }
 
 /// Directed typed relationship between two nodes in the same repository.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Edge {
+    /// Stable caller-owned identifier.
+    pub id: String,
     /// Source node public identifier.
     pub source_id: String,
     /// Target node public identifier.
     pub target_id: String,
     /// Caller-defined relationship category.
     pub relationship: String,
+    /// Finite caller-defined strength or confidence.
+    pub weight: f64,
+    /// Application-defined structured attributes.
+    pub attributes: serde_json::Value,
+}
+
+/// Stable application scope used to partition graph entities.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Scope {
+    /// Durable TSG-assigned integer identifier.
+    pub id: i64,
+    /// Stable caller-owned scope key.
+    pub key: String,
 }
 
 /// Canonical vector associated one-to-one with a node.
@@ -90,11 +107,11 @@ pub enum SearchBackend {
     Adaptive,
 }
 
-/// Optional repository and node-kind constraints for vector search.
+/// Optional scope and node-kind constraints for vector search.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SearchFilter<'a> {
-    /// Restrict results to one repository.
-    pub repository_id: Option<i64>,
+    /// Restrict results to one application scope.
+    pub scope_id: Option<i64>,
     /// Restrict results to one node kind.
     pub kind: Option<&'a str>,
 }

@@ -20,22 +20,29 @@ fn batch() -> WriteBatch {
         nodes: (0..3)
             .map(|index| Node {
                 id: format!("node-{index}"),
-                repository_id: 1,
+                scope_id: None,
                 kind: "function".to_string(),
                 name: format!("function_{index}"),
                 content: String::new(),
+                attributes: serde_json::json!({}),
             })
             .collect(),
         edges: vec![
             Edge {
+                id: "edge-0-1".to_string(),
                 source_id: "node-0".to_string(),
                 target_id: "node-1".to_string(),
                 relationship: "calls".to_string(),
+                weight: 1.0,
+                attributes: serde_json::json!({}),
             },
             Edge {
+                id: "edge-1-2".to_string(),
                 source_id: "node-1".to_string(),
                 target_id: "node-2".to_string(),
                 relationship: "calls".to_string(),
+                weight: 1.0,
+                attributes: serde_json::json!({}),
             },
         ],
         embeddings: (0..3)
@@ -200,10 +207,11 @@ fn crash_writer_process() {
         let id = format!("crash-{index}");
         nodes.push(Node {
             id: id.clone(),
-            repository_id: 1,
+            scope_id: None,
             kind: "function".to_string(),
             name: id.clone(),
             content: String::new(),
+            attributes: serde_json::json!({}),
         });
         embeddings.push(Embedding {
             node_id: id,

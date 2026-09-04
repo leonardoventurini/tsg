@@ -10,7 +10,7 @@ pub use error::{Error, Result};
 pub use store::{Store, StoreBuilder};
 pub use types::{
     CatalogKey, CatalogRecord, CommitReceipt, DeleteReceipt, Direction, Durability, Edge,
-    Embedding, IntegrityReport, Node, SearchBackend, SearchFilter, SearchHit, SearchResults,
+    Embedding, IntegrityReport, Node, Scope, SearchBackend, SearchFilter, SearchHit, SearchResults,
     StoreStats, WriteBatch,
 };
 
@@ -22,13 +22,14 @@ mod tests {
 
     const DIMENSIONS: usize = 8;
 
-    fn node(id: &str, repository_id: i64, kind: &str) -> Node {
+    fn node(id: &str, _scope_id: i64, kind: &str) -> Node {
         Node {
             id: id.to_string(),
-            repository_id,
+            scope_id: None,
             kind: kind.to_string(),
             name: format!("name_{id}"),
             content: format!("content for {id}"),
+            attributes: serde_json::json!({}),
         }
     }
 
@@ -36,6 +37,17 @@ mod tests {
         let mut vector = vec![0.0; DIMENSIONS];
         vector[axis] = 1.0;
         vector
+    }
+
+    fn edge(source_id: &str, target_id: &str, relationship: &str) -> Edge {
+        Edge {
+            id: format!("{source_id}:{relationship}:{target_id}"),
+            source_id: source_id.to_string(),
+            target_id: target_id.to_string(),
+            relationship: relationship.to_string(),
+            weight: 1.0,
+            attributes: serde_json::json!({}),
+        }
     }
 
     fn store(directory: &TempDir, threshold: usize) -> Store {
@@ -64,11 +76,7 @@ mod tests {
         let directory = TempDir::new().unwrap();
         let mut store = store(&directory, 4);
         let mut batch = seeded_batch(2);
-        batch.edges.push(Edge {
-            source_id: "node-0".to_string(),
-            target_id: "node-1".to_string(),
-            relationship: "calls".to_string(),
-        });
+        batch.edges.push(edge("node-0", "node-1", "calls"));
 
         let receipt = store.apply_batch(&batch).unwrap();
 
@@ -108,13 +116,15 @@ mod tests {
     fn cross_repository_edge_rolls_back_the_complete_batch() {
         let directory = TempDir::new().unwrap();
         let mut store = store(&directory, 4);
+        let left_scope = store.get_or_create_scope("left").unwrap();
+        let right_scope = store.get_or_create_scope("right").unwrap();
+        let mut left = node("left", 1, "function");
+        left.scope_id = Some(left_scope.id);
+        let mut right = node("right", 2, "function");
+        right.scope_id = Some(right_scope.id);
         let batch = WriteBatch {
-            nodes: vec![node("left", 1, "function"), node("right", 2, "function")],
-            edges: vec![Edge {
-                source_id: "left".to_string(),
-                target_id: "right".to_string(),
-                relationship: "calls".to_string(),
-            }],
+            nodes: vec![left, right],
+            edges: vec![edge("left", "right", "calls")],
             ..WriteBatch::default()
         };
 
@@ -132,21 +142,9 @@ mod tests {
         let mut store = store(&directory, 4);
         let mut batch = seeded_batch(3);
         batch.edges = vec![
-            Edge {
-                source_id: "node-0".to_string(),
-                target_id: "node-1".to_string(),
-                relationship: "calls".to_string(),
-            },
-            Edge {
-                source_id: "node-1".to_string(),
-                target_id: "node-2".to_string(),
-                relationship: "calls".to_string(),
-            },
-            Edge {
-                source_id: "node-2".to_string(),
-                target_id: "node-0".to_string(),
-                relationship: "calls".to_string(),
-            },
+            edge("node-0", "node-1", "calls"),
+            edge("node-1", "node-2", "calls"),
+            edge("node-2", "node-0", "calls"),
         ];
         store.apply_batch(&batch).unwrap();
 
@@ -203,7 +201,7 @@ mod tests {
                 &unit_vector(0),
                 1,
                 SearchFilter {
-                    repository_id: Some(999),
+                    scope_id: Some(999),
                     kind: None,
                 },
                 SearchBackend::Adaptive,
@@ -381,5 +379,61 @@ mod tests {
             Err(Error::InvalidInput(_))
         ));
         assert_eq!(store.generation().unwrap(), 0);
+    }
+
+    #[test]
+    fn scopes_and_structured_attributes_survive_reopen() {
+        let directory = TempDir::new().unwrap();
+        let database_path = directory.path().join("graph.db");
+        let scope_id;
+        {
+            let mut store = Store::open(&database_path, DIMENSIONS, 4).unwrap();
+            let scope = store.get_or_create_scope("tenant-a").unwrap();
+            scope_id = scope.id;
+            let mut scoped = node("scoped", 0, "record");
+            scoped.scope_id = Some(scope.id);
+            scoped.attributes = serde_json::json!({"external_name": "alpha"});
+            store
+                .apply_batch(&WriteBatch {
+                    nodes: vec![scoped],
+                    ..WriteBatch::default()
+                })
+                .unwrap();
+        }
+
+        let reopened = Store::open(&database_path, DIMENSIONS, 4).unwrap();
+        assert_eq!(
+            reopened.scope_by_key("tenant-a").unwrap().unwrap().id,
+            scope_id
+        );
+        let stored = reopened.get_node("scoped").unwrap().unwrap();
+        assert_eq!(stored.attributes["external_name"], "alpha");
+    }
+
+    #[test]
+    fn malformed_attributes_and_non_finite_weights_are_rejected() {
+        let directory = TempDir::new().unwrap();
+        let mut store = store(&directory, 4);
+        let mut malformed = node("malformed", 0, "record");
+        malformed.attributes = serde_json::json!([]);
+        assert!(matches!(
+            store.apply_batch(&WriteBatch {
+                nodes: vec![malformed],
+                ..WriteBatch::default()
+            }),
+            Err(Error::InvalidInput(_))
+        ));
+
+        let invalid_edge = Edge {
+            weight: f64::NAN,
+            ..edge("missing-a", "missing-b", "related")
+        };
+        assert!(matches!(
+            store.apply_batch(&WriteBatch {
+                edges: vec![invalid_edge],
+                ..WriteBatch::default()
+            }),
+            Err(Error::InvalidInput(_))
+        ));
     }
 }

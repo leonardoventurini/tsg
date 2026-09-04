@@ -28,26 +28,25 @@ fn create_version_zero_store(path: &std::path::Path) {
 }
 
 #[test]
-fn automatic_migration_preserves_data_and_creates_backup() {
+fn legacy_schema_requires_an_explicit_reindex() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("graph.db");
     create_version_zero_store(&database_path);
 
-    let store = Store::open(&database_path, DIMENSIONS, 10).unwrap();
-    let backup_path = store.migration_backup().unwrap();
+    let result = Store::open(&database_path, DIMENSIONS, 10);
 
-    assert_eq!(store.node_count().unwrap(), 1);
-    assert!(backup_path.exists());
-    let backup = Connection::open(backup_path).unwrap();
-    let backup_version: u32 = backup
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
+    assert!(matches!(
+        result,
+        Err(Error::ReindexRequired {
+            found: 0,
+            required: 2
+        })
+    ));
+    let connection = Connection::open(&database_path).unwrap();
+    let node_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))
         .unwrap();
-    let migrated_version: u32 = Connection::open(&database_path)
-        .unwrap()
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(backup_version, 0);
-    assert_eq!(migrated_version, 2);
+    assert_eq!(node_count, 1);
 }
 
 #[test]

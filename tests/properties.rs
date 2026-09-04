@@ -11,10 +11,11 @@ fn node_and_embedding(index: usize) -> (Node, Embedding) {
     (
         Node {
             id: id.clone(),
-            repository_id: 1,
+            scope_id: None,
             kind: "function".to_string(),
             name: id.clone(),
             content: id.clone(),
+            attributes: serde_json::json!({}),
         },
         Embedding {
             node_id: id,

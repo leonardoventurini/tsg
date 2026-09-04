@@ -7,10 +7,11 @@ fn main() -> tsg::Result<()> {
     store.apply_batch(&WriteBatch {
         nodes: vec![Node {
             id: "example".into(),
-            repository_id: 1,
+            scope_id: None,
             kind: "function".into(),
             name: "example".into(),
             content: "fn example() {}".into(),
+            attributes: serde_json::json!({}),
         }],
         embeddings: vec![Embedding {
             node_id: "example".into(),

@@ -230,20 +230,27 @@ fn load_candidate_nodes(
     filter: SearchFilter<'_>,
 ) -> Result<HashMap<u64, Node>> {
     let mut statement = connection.prepare(
-        "SELECT key, id, repository_id, kind, name, content
+        "SELECT key, id, scope_id, kind, name, content, attributes
          FROM nodes
-         WHERE (?1 IS NULL OR repository_id = ?1)
+         WHERE (?1 IS NULL OR scope_id = ?1)
            AND (?2 IS NULL OR kind = ?2)",
     )?;
-    let rows = statement.query_map((filter.repository_id, filter.kind), |row| {
+    let rows = statement.query_map((filter.scope_id, filter.kind), |row| {
         Ok((
             row.get::<_, i64>(0)?,
             Node {
                 id: row.get(1)?,
-                repository_id: row.get(2)?,
+                scope_id: row.get(2)?,
                 kind: row.get(3)?,
                 name: row.get(4)?,
                 content: row.get(5)?,
+                attributes: serde_json::from_str(&row.get::<_, String>(6)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        6,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
             },
         ))
     })?;

@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use fs2::FileExt;
-use rusqlite::{Connection, MAIN_DB, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use crate::error::{Error, Result};
 use crate::types::{
     CatalogRecord, CommitReceipt, DeleteReceipt, Direction, Durability, IntegrityReport, Node,
-    SearchBackend, SearchFilter, SearchResults, StoreStats, WriteBatch,
+    Scope, SearchBackend, SearchFilter, SearchResults, StoreStats, WriteBatch,
 };
 use crate::vector::{VectorAccelerator, encode_vector, exact_search};
 
@@ -24,19 +24,28 @@ CREATE TABLE IF NOT EXISTS store_metadata (
 CREATE TABLE IF NOT EXISTS nodes (
     key INTEGER PRIMARY KEY,
     id TEXT NOT NULL UNIQUE,
-    repository_id INTEGER NOT NULL,
+    scope_id INTEGER REFERENCES scopes(id) ON DELETE CASCADE,
     kind TEXT NOT NULL,
     name TEXT NOT NULL,
-    content TEXT NOT NULL
+    content TEXT NOT NULL,
+    attributes TEXT NOT NULL CHECK(json_valid(attributes))
 );
 
-CREATE INDEX IF NOT EXISTS nodes_repository_kind
-ON nodes(repository_id, kind, key);
+CREATE TABLE IF NOT EXISTS scopes (
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS nodes_scope_kind
+ON nodes(scope_id, kind, key);
 
 CREATE TABLE IF NOT EXISTS edges (
+    id TEXT NOT NULL UNIQUE,
     source_key INTEGER NOT NULL REFERENCES nodes(key) ON DELETE CASCADE,
     target_key INTEGER NOT NULL REFERENCES nodes(key) ON DELETE CASCADE,
     relationship TEXT NOT NULL,
+    weight REAL NOT NULL,
+    attributes TEXT NOT NULL CHECK(json_valid(attributes)),
     PRIMARY KEY (source_key, relationship, target_key)
 ) WITHOUT ROWID;
 
@@ -259,6 +268,85 @@ impl Store {
         self.migration_backup.as_deref()
     }
 
+    /// Creates an application scope if absent and returns its stable identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty key, a read-only handle, or a storage failure.
+    pub fn get_or_create_scope(&mut self, key: &str) -> Result<Scope> {
+        self.require_writable()?;
+        if key.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "scope key must not be empty".to_string(),
+            ));
+        }
+        self.connection
+            .execute("INSERT OR IGNORE INTO scopes(key) VALUES (?1)", [key])?;
+        self.connection
+            .query_row("SELECT id, key FROM scopes WHERE key = ?1", [key], |row| {
+                Ok(Scope {
+                    id: row.get(0)?,
+                    key: row.get(1)?,
+                })
+            })
+            .map_err(Into::into)
+    }
+
+    /// Resolves a scope by its caller-owned key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty key or a storage failure.
+    pub fn scope_by_key(&self, key: &str) -> Result<Option<Scope>> {
+        if key.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "scope key must not be empty".to_string(),
+            ));
+        }
+        self.connection
+            .query_row("SELECT id, key FROM scopes WHERE key = ?1", [key], |row| {
+                Ok(Scope {
+                    id: row.get(0)?,
+                    key: row.get(1)?,
+                })
+            })
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Resolves a scope by its TSG-assigned integer identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the storage query fails.
+    pub fn scope_by_id(&self, id: i64) -> Result<Option<Scope>> {
+        self.connection
+            .query_row("SELECT id, key FROM scopes WHERE id = ?1", [id], |row| {
+                Ok(Scope {
+                    id: row.get(0)?,
+                    key: row.get(1)?,
+                })
+            })
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Returns one graph node by its caller-owned identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when durable data is malformed or the query fails.
+    pub fn get_node(&self, id: &str) -> Result<Option<Node>> {
+        let key: Option<i64> = self
+            .connection
+            .query_row("SELECT key FROM nodes WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+
+        key.map(|key| load_node(&self.connection, key)).transpose()
+    }
+
     /// Atomically applies nodes, edges, embeddings, and a new durable generation.
     ///
     /// # Errors
@@ -266,6 +354,7 @@ impl Store {
     /// Returns an error when the batch is invalid, references an unknown node, or
     /// cannot be committed to `SQLite`. A post-commit accelerator failure is reported
     /// through [`CommitReceipt::accelerator_ready`] instead of as a commit failure.
+    #[allow(clippy::too_many_lines)] // Keeping every mutation visibly inside one transaction guards atomicity.
     pub fn apply_batch(&mut self, batch: &WriteBatch) -> Result<CommitReceipt> {
         self.require_writable()?;
         self.validate_batch(batch)?;
@@ -282,20 +371,24 @@ impl Store {
 
         let transaction = self.connection.transaction()?;
         for node in &batch.nodes {
+            let attributes = serde_json::to_string(&node.attributes)
+                .map_err(|error| Error::InvalidInput(format!("serialize node JSON: {error}")))?;
             transaction.execute(
-                "INSERT INTO nodes(id, repository_id, kind, name, content)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO nodes(id, scope_id, kind, name, content, attributes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, json(?6))
                  ON CONFLICT(id) DO UPDATE SET
-                    repository_id = excluded.repository_id,
+                    scope_id = COALESCE(excluded.scope_id, nodes.scope_id),
                     kind = excluded.kind,
                     name = excluded.name,
-                    content = excluded.content",
+                    content = excluded.content,
+                    attributes = json_patch(nodes.attributes, excluded.attributes)",
                 params![
                     node.id,
-                    node.repository_id,
+                    node.scope_id,
                     node.kind,
                     node.name,
-                    node.content
+                    node.content,
+                    attributes
                 ],
             )?;
         }
@@ -310,19 +403,31 @@ impl Store {
         for edge in &batch.edges {
             let source_key = node_key(&transaction, &edge.source_id)?;
             let target_key = node_key(&transaction, &edge.target_id)?;
-            let source_repository = node_repository(&transaction, source_key)?;
-            let target_repository = node_repository(&transaction, target_key)?;
-            if source_repository != target_repository {
+            let source_scope = node_scope(&transaction, source_key)?;
+            let target_scope = node_scope(&transaction, target_key)?;
+            if source_scope != target_scope {
                 return Err(Error::InvalidInput(format!(
-                    "edge crosses repository boundary: {} -> {}",
+                    "edge crosses scope boundary: {} -> {}",
                     edge.source_id, edge.target_id
                 )));
             }
             transaction.execute(
-                "INSERT INTO edges(source_key, target_key, relationship)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(source_key, relationship, target_key) DO NOTHING",
-                params![source_key, target_key, edge.relationship],
+                "INSERT INTO edges(id, source_key, target_key, relationship, weight, attributes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, json(?6))
+                 ON CONFLICT(source_key, relationship, target_key) DO UPDATE SET
+                    id = excluded.id,
+                    weight = excluded.weight,
+                    attributes = json_patch(edges.attributes, excluded.attributes)",
+                params![
+                    edge.id,
+                    source_key,
+                    target_key,
+                    edge.relationship,
+                    edge.weight,
+                    serde_json::to_string(&edge.attributes).map_err(
+                        |error| Error::InvalidInput(format!("serialize edge JSON: {error}"))
+                    )?
+                ],
             )?;
         }
         for record in &batch.catalog_records {
@@ -514,8 +619,8 @@ impl Store {
             return Ok(Vec::new());
         }
         let start_key = node_key(&self.connection, start_id)?;
-        let repository_id: i64 = self.connection.query_row(
-            "SELECT repository_id FROM nodes WHERE key = ?1",
+        let scope_id: Option<i64> = self.connection.query_row(
+            "SELECT scope_id FROM nodes WHERE key = ?1",
             [start_key],
             |row| row.get(0),
         )?;
@@ -534,7 +639,7 @@ impl Store {
                     continue;
                 }
                 let node = load_node(&self.connection, neighbor_key)?;
-                if node.repository_id != repository_id {
+                if node.scope_id != scope_id {
                     continue;
                 }
                 frontier.push_back((neighbor_key, depth + 1));
@@ -800,6 +905,21 @@ impl Store {
                     "node IDs must be non-empty and unique within a batch".to_string(),
                 ));
             }
+            validate_attributes(&node.attributes, "node")?;
+        }
+        let mut edge_ids = HashSet::new();
+        for edge in &batch.edges {
+            if edge.id.trim().is_empty() || !edge_ids.insert(edge.id.as_str()) {
+                return Err(Error::InvalidInput(
+                    "edge IDs must be non-empty and unique within a batch".to_string(),
+                ));
+            }
+            if !edge.weight.is_finite() {
+                return Err(Error::InvalidInput(
+                    "edge weight must be finite".to_string(),
+                ));
+            }
+            validate_attributes(&edge.attributes, "edge")?;
         }
         let mut embedding_ids = HashSet::new();
         for embedding in &batch.embeddings {
@@ -857,9 +977,9 @@ impl Store {
         let count = self.connection.query_row(
             "SELECT COUNT(*) FROM nodes AS n
              JOIN embeddings AS e ON e.node_key = n.key
-             WHERE (?1 IS NULL OR n.repository_id = ?1)
+             WHERE (?1 IS NULL OR n.scope_id = ?1)
                AND (?2 IS NULL OR n.kind = ?2)",
-            (filter.repository_id, filter.kind),
+            (filter.scope_id, filter.kind),
             |row| row.get(0),
         )?;
 
@@ -914,9 +1034,9 @@ fn acquire_writer_lock(database_path: &Path) -> Result<File> {
 
 fn initialize_schema(
     connection: &mut Connection,
-    database_path: &Path,
+    _database_path: &Path,
     dimensions: usize,
-    durability: Durability,
+    _durability: Durability,
 ) -> Result<Option<PathBuf>> {
     let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version > CURRENT_SCHEMA_VERSION {
@@ -932,22 +1052,13 @@ fn initialize_schema(
         [],
         |row| row.get(0),
     )?;
-    if version == 1 && has_existing_schema {
+    if version < CURRENT_SCHEMA_VERSION && has_existing_schema {
         return Err(Error::ReindexRequired {
             found: version,
             required: CURRENT_SCHEMA_VERSION,
         });
     }
-    let backup = if version < CURRENT_SCHEMA_VERSION && has_existing_schema {
-        Some(create_migration_backup(
-            connection,
-            database_path,
-            version,
-            durability,
-        )?)
-    } else {
-        None
-    };
+    let backup = None;
 
     let transaction = connection.transaction()?;
     transaction.execute_batch(SCHEMA)?;
@@ -973,6 +1084,15 @@ fn validate_catalog_namespace(namespace: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_attributes(attributes: &serde_json::Value, owner: &str) -> Result<()> {
+    if !attributes.is_object() {
+        return Err(Error::InvalidInput(format!(
+            "{owner} attributes must be a JSON object"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_catalog_identity(namespace: &str, key: &str) -> Result<()> {
     validate_catalog_namespace(namespace)?;
     if key.trim().is_empty() {
@@ -992,32 +1112,6 @@ fn validate_schema(connection: &Connection) -> Result<()> {
         });
     }
     Ok(())
-}
-
-fn create_migration_backup(
-    connection: &Connection,
-    database_path: &Path,
-    version: u32,
-    durability: Durability,
-) -> Result<PathBuf> {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| Error::Storage(format!("system clock predates Unix epoch: {error}")))?
-        .as_millis();
-    let file_name = database_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("tsg.db");
-    let backup_path =
-        database_path.with_file_name(format!("{file_name}.schema-v{version}-{timestamp}.backup"));
-    connection.backup(MAIN_DB, &backup_path, None)?;
-    if durability == Durability::Full {
-        File::open(&backup_path)?.sync_all()?;
-        if let Some(parent) = backup_path.parent() {
-            File::open(parent)?.sync_all()?;
-        }
-    }
-    Ok(backup_path)
 }
 
 /**
@@ -1047,24 +1141,31 @@ fn node_key(connection: &Connection, node_id: &str) -> Result<i64> {
 
 fn load_node(connection: &Connection, key: i64) -> Result<Node> {
     Ok(connection.query_row(
-        "SELECT id, repository_id, kind, name, content FROM nodes WHERE key = ?1",
+        "SELECT id, scope_id, kind, name, content, attributes FROM nodes WHERE key = ?1",
         [key],
         |row| {
             Ok(Node {
                 id: row.get(0)?,
-                repository_id: row.get(1)?,
+                scope_id: row.get(1)?,
                 kind: row.get(2)?,
                 name: row.get(3)?,
                 content: row.get(4)?,
+                attributes: serde_json::from_str(&row.get::<_, String>(5)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        5,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
             })
         },
     )?)
 }
 
-fn node_repository(connection: &Connection, key: i64) -> Result<i64> {
-    Ok(connection.query_row(
-        "SELECT repository_id FROM nodes WHERE key = ?1",
-        [key],
-        |row| row.get(0),
-    )?)
+fn node_scope(connection: &Connection, key: i64) -> Result<Option<i64>> {
+    Ok(
+        connection.query_row("SELECT scope_id FROM nodes WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })?,
+    )
 }

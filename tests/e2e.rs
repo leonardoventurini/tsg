@@ -12,6 +12,7 @@ fn embedding(axis: usize) -> Vec<f32> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn complete_public_api_lifecycle_survives_reopen() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("project.db");
@@ -21,34 +22,42 @@ fn complete_public_api_lifecycle_survives_reopen() {
             .exact_search_threshold(1)
             .build()
             .unwrap();
+        let repository_a = store.get_or_create_scope("repository-a").unwrap();
+        let repository_b = store.get_or_create_scope("repository-b").unwrap();
         let batch = WriteBatch {
             nodes: vec![
                 Node {
                     id: "repository-a:file".to_string(),
-                    repository_id: 10,
+                    scope_id: Some(repository_a.id),
                     kind: "file".to_string(),
                     name: "lib.rs".to_string(),
                     content: "mod search;".to_string(),
+                    attributes: serde_json::json!({}),
                 },
                 Node {
                     id: "repository-a:function".to_string(),
-                    repository_id: 10,
+                    scope_id: Some(repository_a.id),
                     kind: "function".to_string(),
                     name: "search".to_string(),
                     content: "fn search() {}".to_string(),
+                    attributes: serde_json::json!({}),
                 },
                 Node {
                     id: "repository-b:function".to_string(),
-                    repository_id: 20,
+                    scope_id: Some(repository_b.id),
                     kind: "function".to_string(),
                     name: "unrelated".to_string(),
                     content: "fn unrelated() {}".to_string(),
+                    attributes: serde_json::json!({}),
                 },
             ],
             edges: vec![Edge {
+                id: "contains".to_string(),
                 source_id: "repository-a:file".to_string(),
                 target_id: "repository-a:function".to_string(),
                 relationship: "contains".to_string(),
+                weight: 1.0,
+                attributes: serde_json::json!({}),
             }],
             embeddings: vec![
                 Embedding {
@@ -74,7 +83,7 @@ fn complete_public_api_lifecycle_survives_reopen() {
                 &embedding(1),
                 10,
                 SearchFilter {
-                    repository_id: Some(10),
+                    scope_id: Some(repository_a.id),
                     kind: Some("function"),
                 },
                 SearchBackend::Adaptive,
