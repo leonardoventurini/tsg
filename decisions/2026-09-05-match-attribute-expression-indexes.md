@@ -26,4 +26,7 @@ A query-plan regression verifies the actual private query used by the public API
 selects the attribute index for scoped seeks. Generated fixtures cover nested
 attributes, two scopes, absent values, pagination, and rejected malicious paths.
 Unscoped searches can still scan; accelerating them is outside this bounded fix.
-Release and SCS upgrade follow separately; code rollback requires no data rollback.
+Released as immutable TSG v0.2.2 at `6e6e607` after CI and release checks passed.
+The published source archive checksum was verified; SCS consumes the released Git
+tag beginning with version 0.1.5. Exact workflow IDs and artifact digest are in the
+associated spec. Code rollback requires no data rollback.
