@@ -4,6 +4,15 @@ All notable changes are recorded here. TSG follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-05
+
+### Fixed
+
+- Embedding upserts update only changed USearch keys instead of reconstructing
+  the entire vector index after every batch. Metadata-only writes reuse the
+  accelerator. Failed post-commit updates discard partial accelerator state;
+  canonical exact search and reopen/repair preserve availability and recovery.
+
 ## [0.2.2] - 2026-09-05
 
 ### Fixed

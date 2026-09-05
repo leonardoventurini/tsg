@@ -13,6 +13,8 @@ pub(crate) struct VectorAccelerator {
     path: PathBuf,
     dimensions: usize,
     generation: u64,
+    #[cfg(test)]
+    pub(crate) instance_id: u64,
 }
 
 impl VectorAccelerator {
@@ -31,6 +33,8 @@ impl VectorAccelerator {
                     path,
                     dimensions,
                     generation,
+                    #[cfg(test)]
+                    instance_id: next_instance_id(),
                 });
             }
         }
@@ -53,6 +57,8 @@ impl VectorAccelerator {
             path,
             dimensions,
             generation,
+            #[cfg(test)]
+            instance_id: next_instance_id(),
         })
     }
 
@@ -82,7 +88,36 @@ impl VectorAccelerator {
             path,
             dimensions,
             generation,
+            #[cfg(test)]
+            instance_id: next_instance_id(),
         })
+    }
+
+    pub(crate) fn upsert(
+        &mut self,
+        vectors: &[(u64, &[f32])],
+        generation: u64,
+        durability: Durability,
+    ) -> Result<()> {
+        let capacity = self.index.size().saturating_add(vectors.len()).max(1);
+        if capacity > self.index.capacity() {
+            self.index
+                .reserve(capacity)
+                .map_err(|error| Error::Storage(format!("reserve USearch capacity: {error}")))?;
+        }
+        for (key, vector) in vectors {
+            if self.index.contains(*key) {
+                self.index.remove(*key).map_err(|error| {
+                    Error::Storage(format!("remove vector from USearch: {error}"))
+                })?;
+            }
+            self.index
+                .add(*key, vector)
+                .map_err(|error| Error::Storage(format!("add vector to USearch: {error}")))?;
+        }
+        persist_index(&self.index, &self.path, generation, durability)?;
+        self.generation = generation;
+        Ok(())
     }
 
     pub(crate) fn search(
@@ -337,4 +372,11 @@ fn sort_hits(hits: &mut [SearchHit]) {
             .total_cmp(&right.distance)
             .then_with(|| left.node.id.cmp(&right.node.id))
     });
+}
+
+#[cfg(test)]
+fn next_instance_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }

@@ -547,6 +547,13 @@ impl Store {
         }
 
         let transaction = self.connection.transaction()?;
+        let previous_generation: i64 = transaction.query_row(
+            "SELECT generation FROM store_metadata WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let previous_generation = sql_u64(previous_generation, "store generation")?;
+        let mut changed_vectors = Vec::with_capacity(batch.embeddings.len());
         for node in &batch.nodes {
             let attributes = serde_json::to_string(&node.attributes)
                 .map_err(|error| Error::InvalidInput(format!("serialize node JSON: {error}")))?;
@@ -598,6 +605,7 @@ impl Store {
                  ON CONFLICT(node_key) DO UPDATE SET vector = excluded.vector",
                 params![key, encode_vector(&embedding.vector)],
             )?;
+            changed_vectors.push((sql_u64(key, "node key")?, embedding.vector.as_slice()));
         }
         for edge in &batch.edges {
             let source_key = node_key(&transaction, &edge.source_id)?;
@@ -653,20 +661,36 @@ impl Store {
         let generation = sql_u64(generation, "store generation")?;
         transaction.commit()?;
 
-        let rebuilt = VectorAccelerator::rebuild(
-            &self.connection,
-            self.vector_path.clone(),
-            self.dimensions,
-            generation,
-            self.durability,
-        )
-        .ok();
-        let accelerator_ready = rebuilt.is_some();
-        *self
+        let mut accelerator = self
             .accelerator
             .lock()
-            .map_err(|_| Error::Storage("vector accelerator lock is poisoned".to_string()))? =
-            rebuilt;
+            .map_err(|_| Error::Storage("vector accelerator lock is poisoned".to_string()))?;
+        let accelerator_ready = if let Some(current) = accelerator
+            .as_mut()
+            .filter(|current| current.is_current(previous_generation))
+        {
+            // SQL has committed. Any partial remove/add or persistence failure
+            // invalidates this accelerator; readers must use authoritative SQL.
+            if current
+                .upsert(&changed_vectors, generation, self.durability)
+                .is_ok()
+            {
+                true
+            } else {
+                *accelerator = None;
+                false
+            }
+        } else {
+            *accelerator = VectorAccelerator::rebuild(
+                &self.connection,
+                self.vector_path.clone(),
+                self.dimensions,
+                generation,
+                self.durability,
+            )
+            .ok();
+            accelerator.is_some()
+        };
 
         Ok(CommitReceipt {
             generation,
@@ -1615,5 +1639,83 @@ mod attribute_query_tests {
             ),
             "{details:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod incremental_accelerator_tests {
+    use super::*;
+    use crate::types::Embedding;
+
+    #[test]
+    fn committed_batches_reuse_accelerator_and_stale_state_rebuilds() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("graph.db"), 64, 0).unwrap();
+        let identity = |store: &Store| {
+            store
+                .accelerator
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .instance_id
+        };
+        let initial = identity(&store);
+        for batch_index in 0..4 {
+            let batch = WriteBatch {
+                nodes: (0..32)
+                    .map(|offset| Node {
+                        id: format!("node-{}", batch_index * 32 + offset),
+                        scope_id: None,
+                        kind: "record".into(),
+                        name: String::new(),
+                        content: String::new(),
+                        attributes: serde_json::json!({}),
+                    })
+                    .collect(),
+                embeddings: (0..32)
+                    .map(|offset| Embedding {
+                        node_id: format!("node-{}", batch_index * 32 + offset),
+                        vector: (0..64).map(|axis| f32::from(axis == offset)).collect(),
+                    })
+                    .collect(),
+                ..WriteBatch::default()
+            };
+            assert!(store.apply_batch(&batch).unwrap().accelerator_ready);
+            assert_eq!(
+                identity(&store),
+                initial,
+                "embedding batch reconstructed index"
+            );
+            assert!(store.apply_batch(&batch).unwrap().accelerator_ready);
+            assert_eq!(
+                identity(&store),
+                initial,
+                "replacement batch reconstructed index"
+            );
+        }
+        let metadata = WriteBatch {
+            catalog_records: vec![CatalogRecord {
+                namespace: "test".into(),
+                key: "progress".into(),
+                value: serde_json::json!(4),
+            }],
+            ..WriteBatch::default()
+        };
+        assert!(store.apply_batch(&metadata).unwrap().accelerator_ready);
+        assert_eq!(identity(&store), initial, "metadata reconstructed index");
+
+        // An older in-memory generation must never be promoted by applying only
+        // the newest batch: simulate a missed generation and require full repair.
+        store
+            .connection
+            .execute("UPDATE store_metadata SET generation = generation + 1", [])
+            .unwrap();
+        assert!(store.apply_batch(&metadata).unwrap().accelerator_ready);
+        let repaired = identity(&store);
+        assert_ne!(repaired, initial);
+        *store.accelerator.lock().unwrap() = None;
+        assert!(store.apply_batch(&metadata).unwrap().accelerator_ready);
+        assert_ne!(identity(&store), repaired);
     }
 }

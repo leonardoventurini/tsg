@@ -82,7 +82,7 @@ Pin the current release tag over public HTTPS:
 
 ```toml
 [dependencies]
-tsg = { git = "https://github.com/leonardoventurini/tsg.git", tag = "v0.2.2" }
+tsg = { git = "https://github.com/leonardoventurini/tsg.git", tag = "v0.2.3" }
 ```
 
 No GitHub credentials or deploy key are required. Commit `Cargo.lock` in
@@ -102,25 +102,25 @@ tsg = { path = "../tsg" }
 
 ### Release archive for vendoring
 
-The [TSG v0.2.2 release](https://github.com/leonardoventurini/tsg/releases/tag/v0.2.2)
-contains the platform-independent `tsg-0.2.2.crate` source archive and
+The [TSG v0.2.3 release](https://github.com/leonardoventurini/tsg/releases/tag/v0.2.3)
+contains the platform-independent `tsg-0.2.3.crate` source archive and
 `SHA256SUMS`. Download and verify both with GitHub CLI:
 
 ```sh
-gh release download v0.2.2 \
+gh release download v0.2.3 \
   --repo leonardoventurini/tsg \
   --pattern 'tsg-*.crate' \
   --pattern SHA256SUMS
 sha256sum --check SHA256SUMS
 mkdir -p vendor
-tar -xzf tsg-0.2.2.crate -C vendor
+tar -xzf tsg-0.2.3.crate -C vendor
 ```
 
 Reference the unpacked directory as a path dependency:
 
 ```toml
 [dependencies]
-tsg = { path = "vendor/tsg-0.2.2" }
+tsg = { path = "vendor/tsg-0.2.3" }
 ```
 
 GitHub Releases are durable artifact distribution, not a Cargo registry, so
