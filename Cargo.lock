@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "tsg"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "fs2",
  "proptest",

@@ -4,6 +4,14 @@ All notable changes are recorded here. TSG follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-05
+
+### Fixed
+
+- Scoped attribute lookups use registered SQLite expression indexes instead of
+  scanning every node for each lookup. JSON path validation, value binding,
+  pagination, and unscoped query behavior remain unchanged.
+
 ## [0.2.1] - 2026-09-04
 
 ### Fixed
