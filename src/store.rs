@@ -394,20 +394,13 @@ impl Store {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<Node>> {
-        validate_json_path(filter.path)?;
+        let sql = node_attribute_query(filter.path, scope_id.is_some())?;
         let (limit, offset) = pagination(limit, offset)?;
         let value = serde_json::to_string(filter.value)
             .map_err(|error| Error::InvalidInput(format!("serialize filter JSON: {error}")))?;
-        let mut statement = self.connection.prepare(
-            "SELECT key FROM nodes
-             WHERE (?1 IS NULL OR scope_id = ?1)
-               AND json_extract(attributes, ?2) = json_extract(?3, '$')
-             ORDER BY id LIMIT ?4 OFFSET ?5",
-        )?;
+        let mut statement = self.connection.prepare(&sql)?;
         let keys = statement
-            .query_map((scope_id, filter.path, value, limit, offset), |row| {
-                row.get(0)
-            })?
+            .query_map((scope_id, value, limit, offset), |row| row.get(0))?
             .collect::<std::result::Result<Vec<i64>, _>>()?;
 
         keys.into_iter()
@@ -1574,4 +1567,53 @@ fn valid_json_path_segment(segment: &str) -> bool {
     segment
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+fn node_attribute_query(path: &str, scoped: bool) -> Result<String> {
+    validate_json_path(path)?;
+    // SQLite matches expression indexes syntactically: a bound JSON path cannot
+    // use the registered literal-path index. Only validated path segments enter
+    // SQL; values remain parameters. Separate scope predicates allow index seeks.
+    let scope = if scoped {
+        "scope_id = ?1"
+    } else {
+        "?1 IS NULL"
+    };
+    Ok(format!(
+        "SELECT key FROM nodes WHERE {scope}
+         AND json_extract(attributes, '{path}') = json_extract(?2, '$')
+         ORDER BY id LIMIT ?3 OFFSET ?4"
+    ))
+}
+
+#[cfg(test)]
+mod attribute_query_tests {
+    use super::*;
+
+    #[test]
+    fn scoped_attribute_lookup_uses_registered_expression_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::builder(directory.path().join("graph.db"), 8)
+            .node_attribute_indexes(["$.qualified_name"])
+            .build()
+            .unwrap();
+        let sql = format!(
+            "EXPLAIN QUERY PLAN {}",
+            node_attribute_query("$.qualified_name", true).unwrap()
+        );
+        let mut statement = store.connection.prepare(&sql).unwrap();
+        let details = statement
+            .query_map((1, "\"missing\"", 1, 0), |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            details.iter().any(
+                |detail| detail.contains("SEARCH nodes USING INDEX tsg_node_attr_")
+                    && detail.contains("scope_id=?")
+                    && detail.contains("<expr>=?")
+            ),
+            "{details:?}"
+        );
+    }
 }
