@@ -61,5 +61,11 @@ latency guarantee or a CI timing threshold. Tests also check replacement distanc
 key uniqueness, current node metadata, SQL rollback, sidecar failure fallback,
 stale/missing accelerator recovery, and successful read-only persisted reopen.
 
-Release metadata and README examples now target immutable v0.2.3. Publication is
-pending remote CI; the active SCS daemon was neither restarted nor mutated.
+Published immutable v0.2.3 at `f3f45241723a83b322676ecd22c36d4add66a53b` after
+CI `33990040206` passed all jobs. Release workflow `33990185824` passed and
+published `tsg-0.2.3.crate` plus `SHA256SUMS`. Downloaded archive verification passed;
+SHA-256: `309c52d3349260150ad0fbfbce4a8b873d04ba0b815845a18ab53d0a8b28ee0e`.
+Release: https://github.com/leonardoventurini/tsg/releases/tag/v0.2.3
+The active SCS daemon was neither restarted nor mutated by this upstream work.
+Consumer SCS v0.1.8 pins the tag and passed 254 Python tests, 99 Rust tests and
+84.67% Python line coverage before its separate release CI.

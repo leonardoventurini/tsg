@@ -29,5 +29,8 @@ was rejected because it obscures degraded readiness and repeats expensive work.
 Generated tests pin instance reuse, replacement uniqueness, transactional rollback,
 stale/missing generation recovery, failure fallback, and read-only reopen. An
 opt-in 4,096-dimensional benchmark supplies reproducible diagnostics without
-machine-dependent CI timing ceilings. Release and consumer verification are
-coordinated separately after required local checks.
+machine-dependent CI timing ceilings. Released as immutable v0.2.3 at `f3f4524` after 43 local tests, 89.26% line
+coverage and all required checks; CI `33990040206` and release `33990185824`
+passed. The downloaded crate matches its published checksum. SCS v0.1.8 consumes
+the tag and passed its full local gate; installed runtime verification belongs
+to the consumer rollout.
