@@ -508,7 +508,13 @@ impl Store {
             ));
         }
         let (limit, offset) = pagination(limit, offset)?;
-        let pattern = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
+        let pattern = format!(
+            "%{}%",
+            query
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
         let mut statement = self.connection.prepare(
             "SELECT key FROM nodes WHERE name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
              AND (?2 IS NULL OR scope_id = ?2) AND (?3 IS NULL OR kind = ?3)
@@ -569,6 +575,28 @@ impl Store {
                     attributes
                 ],
             )?;
+        }
+        // Check the final node scopes, so connected endpoints can move together
+        // while a node-only upsert cannot invalidate an existing edge.
+        for node in &batch.nodes {
+            let key = node_key(&transaction, &node.id)?;
+            let crossing: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT source.id, target.id FROM edges AS edge
+                     JOIN nodes AS source ON source.key = edge.source_key
+                     JOIN nodes AS target ON target.key = edge.target_key
+                     WHERE (edge.source_key = ?1 OR edge.target_key = ?1)
+                       AND source.scope_id IS NOT target.scope_id
+                     LIMIT 1",
+                    [key],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((source, target)) = crossing {
+                return Err(Error::InvalidInput(format!(
+                    "edge crosses scope boundary: {source} -> {target}"
+                )));
+            }
         }
         for embedding in &batch.embeddings {
             let key = node_key(&transaction, &embedding.node_id)?;
@@ -786,8 +814,9 @@ impl Store {
         }
 
         let candidate_count = self.candidate_count(filter)?;
-        let accelerator_unavailable =
-            self.read_only && !self.accelerator_ready(self.generation()?)?;
+        // A failed sidecar write never invalidates canonical embeddings. Both
+        // writable and read-only handles must retain adaptive exact fallback.
+        let accelerator_unavailable = !self.accelerator_ready(self.generation()?)?;
         let backend = match requested_backend {
             SearchBackend::Adaptive
                 if candidate_count <= self.exact_search_threshold || accelerator_unavailable =>

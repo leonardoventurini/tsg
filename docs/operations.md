@@ -19,6 +19,11 @@ not, open writable and call `Store::repair_accelerator`. Deleting only the
 `.usearch` file and its generation marker is also recoverable because a writable
 open reconstructs them from canonical embeddings.
 
+Adaptive search uses exact canonical vectors whenever acceleration is unavailable,
+including after sidecar write failures on writable handles. Explicit USearch
+requests still report a failure; `repair_accelerator` restores acceleration once
+the filesystem problem is resolved.
+
 Schema versions that require a rebuild fail with `Error::ReindexRequired` and
 leave the existing database unchanged. Create a fresh database at a separate
 path, rebuild it from the application's source of truth, verify it, and only

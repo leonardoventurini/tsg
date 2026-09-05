@@ -4,6 +4,16 @@ All notable changes are recorded here. TSG follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-04
+
+### Fixed
+
+- Writable adaptive search falls back to canonical exact search when sidecar
+  persistence fails, matching read-only availability behavior.
+- Node updates cannot leave existing edges crossing application scopes; invalid
+  batches roll back atomically.
+- Name searches treat backslashes literally alongside percent and underscore.
+
 ## [0.2.0] - 2026-09-04
 
 ### Added
