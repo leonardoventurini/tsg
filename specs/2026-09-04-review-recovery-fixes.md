@@ -27,9 +27,9 @@ Rollback consumers to v0.2.0 if needed; these fixes require no data migration.
 - [x] Add and run generated regression fixtures before fixes.
 - [x] Fix confirmed storage/search defects; document their limits.
 - [x] Run fmt, clippy, all-target tests, rustdoc, coverage, and packaging.
-- [ ] Record decisions and commit task-owned paths with hooks enabled.
-- [ ] Bump patch version and publish v0.2.1 through the existing release workflow.
-- [ ] Confirm release and artifacts before upgrading SCS.
+- [x] Record decisions and commit task-owned paths with hooks enabled.
+- [x] Bump patch version and publish v0.2.1 through the existing release workflow.
+- [x] Confirm release and artifacts before upgrading SCS.
 
 ## Verification
 
@@ -43,3 +43,10 @@ and package build/verification passed. cargo-deny passed with existing unmatched
 license allowance and duplicate transitive version warnings. Literal name lookup
 regressions also failed before and passed after the fix. No schema migration or
 public signature changes were needed.
+
+Release commit: `6aa395c246ab0342342662387dfdffe7dbea0be3`. Both CI runs and
+[release workflow](https://github.com/leonardoventurini/tsg/actions/runs/33940322824)
+succeeded. The downloaded archive matched its published SHA256SUMS entry:
+`cdfb0c261ad9b0fba862f4c1e8bcd50325f984c8e8f261a34127c40646e2a0ad`.
+The release run had nonblocking cache-cleanup ENOENT annotations for absent test
+directories; package build and publication completed successfully.
