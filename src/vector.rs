@@ -120,6 +120,29 @@ impl VectorAccelerator {
         Ok(())
     }
 
+    /// Removes keys incrementally and persists the resulting accelerator.
+    ///
+    /// Deletion is uncommon relative to search, but corpora can be large enough
+    /// that a full rebuild makes reads unavailable for an unacceptable interval.
+    pub(crate) fn remove(
+        &mut self,
+        keys: &[u64],
+        generation: u64,
+        durability: Durability,
+    ) -> Result<()> {
+        for key in keys {
+            if self.index.contains(*key) {
+                self.index.remove(*key).map_err(|error| {
+                    Error::Storage(format!("remove vector from USearch: {error}"))
+                })?;
+            }
+        }
+
+        persist_index(&self.index, &self.path, generation, durability)?;
+        self.generation = generation;
+        Ok(())
+    }
+
     pub(crate) fn search(
         &self,
         connection: &Connection,

@@ -721,10 +721,28 @@ impl Store {
             ));
         }
 
+        let previous_generation = self.generation()?;
+
         let transaction = self.connection.transaction()?;
         let mut nodes_deleted = 0_usize;
+        let mut removed_keys = Vec::new();
         for node_id in node_ids {
-            nodes_deleted += transaction.execute("DELETE FROM nodes WHERE id = ?1", [node_id])?;
+            let key = transaction
+                .query_row("SELECT key FROM nodes WHERE id = ?1", [node_id], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .optional()?;
+            let deleted = transaction.execute("DELETE FROM nodes WHERE id = ?1", [node_id])?;
+            nodes_deleted += deleted;
+            if deleted > 0 {
+                let key = key.ok_or_else(|| {
+                    Error::Storage("deleted node is missing its storage key".to_string())
+                })?;
+                removed_keys.push(
+                    u64::try_from(key)
+                        .map_err(|_| Error::Storage("stored node key is negative".to_string()))?,
+                );
+            }
         }
         let generation = if nodes_deleted == 0 {
             transaction.rollback()?;
@@ -744,7 +762,29 @@ impl Store {
         let accelerator_ready = if nodes_deleted == 0 {
             self.accelerator_ready(generation)?
         } else {
-            self.rebuild_accelerator(generation)
+            let mut accelerator = self
+                .accelerator
+                .lock()
+                .map_err(|_| Error::Storage("vector accelerator lock is poisoned".to_string()))?;
+            if let Some(current) = accelerator
+                .as_mut()
+                .filter(|current| current.is_current(previous_generation))
+            {
+                // SQL has committed. A failed incremental persistence drops the
+                // stale accelerator so authoritative SQL remains available.
+                if current
+                    .remove(&removed_keys, generation, self.durability)
+                    .is_ok()
+                {
+                    true
+                } else {
+                    *accelerator = None;
+                    false
+                }
+            } else {
+                drop(accelerator);
+                self.rebuild_accelerator(generation)
+            }
         };
         Ok(DeleteReceipt {
             generation,
@@ -1717,5 +1757,66 @@ mod incremental_accelerator_tests {
         *store.accelerator.lock().unwrap() = None;
         assert!(store.apply_batch(&metadata).unwrap().accelerator_ready);
         assert_ne!(identity(&store), repaired);
+    }
+
+    #[test]
+    fn node_deletes_remove_vectors_without_rebuilding_current_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("graph.db");
+        let mut store = Store::open(&database, 64, 0).unwrap();
+        let batch = WriteBatch {
+            nodes: (0..2)
+                .map(|offset| Node {
+                    id: format!("node-{offset}"),
+                    scope_id: None,
+                    kind: "record".into(),
+                    name: String::new(),
+                    content: String::new(),
+                    attributes: serde_json::json!({}),
+                })
+                .collect(),
+            embeddings: (0..2)
+                .map(|offset| Embedding {
+                    node_id: format!("node-{offset}"),
+                    vector: (0..64).map(|axis| f32::from(axis == offset)).collect(),
+                })
+                .collect(),
+            ..WriteBatch::default()
+        };
+        assert!(store.apply_batch(&batch).unwrap().accelerator_ready);
+
+        let identity = |store: &Store| {
+            store
+                .accelerator
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .instance_id
+        };
+        let initial = identity(&store);
+        let receipt = store.delete_nodes(&["node-0".to_string()]).unwrap();
+
+        assert_eq!(receipt.nodes_deleted, 1);
+        assert!(receipt.accelerator_ready);
+        assert_eq!(identity(&store), initial, "node delete reconstructed index");
+
+        let query: Vec<_> = (0..64).map(|axis| f32::from(axis == 0)).collect();
+        let hit = &store
+            .search(&query, 1, SearchFilter::default(), SearchBackend::Usearch)
+            .unwrap()
+            .hits[0];
+        assert_eq!(hit.node.id, "node-1");
+        drop(store);
+
+        let reopened = Store::builder(&database, 64)
+            .read_only(true)
+            .build()
+            .unwrap();
+        let hit = &reopened
+            .search(&query, 1, SearchFilter::default(), SearchBackend::Usearch)
+            .unwrap()
+            .hits[0];
+        assert_eq!(hit.node.id, "node-1");
     }
 }
