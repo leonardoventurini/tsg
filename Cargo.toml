@@ -13,6 +13,15 @@ keywords = ["graph", "vector", "sqlite", "embeddings", "search"]
 categories = ["database-implementations", "data-structures"]
 exclude = ["specs/", "decisions/"]
 
+# Keep local build artifacts bounded while retaining file-and-line backtraces.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
 [dependencies]
 fs2 = "0.4"
 rusqlite = { version = "0.40", features = ["backup", "bundled"] }

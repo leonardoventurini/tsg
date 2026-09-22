@@ -4,6 +4,11 @@ All notable changes are recorded here. TSG follows Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Local development and test builds disable incremental compilation and retain
+  only line-table debug information to prevent unbounded Cargo artifact growth.
+
 ## [0.2.3] - 2026-09-05
 
 ### Fixed
